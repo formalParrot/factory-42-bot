@@ -15,21 +15,26 @@ const COLOR_ONLINE = 0x57f287;
 const COLOR_OFFLINE = 0xed4245;
 const COLOR_PARTIAL = 0xfee75c;
 
-// Bar-graph segments. The filled squares themselves escalate in colour with
-// usage (white -> yellow -> orange -> red); the unfilled part stays dark.
-const BAR_SEGMENTS = 10;
-const SQUARE_EMPTY = '⬛';
+// Bar-graph segments. The filled blocks are coloured via ANSI so they escalate
+// with usage (white -> yellow -> orange -> red). Discord's ANSI palette has no
+// true orange, so 85%+ uses amber (code 33). Colours render on desktop/web;
+// some mobile clients show the blocks uncoloured.
+const BAR_SEGMENTS = 20;
+const FILLED = '█';
+const EMPTY = '░';
+const ESC = String.fromCharCode(27); // ANSI escape
 
-function usageSquare(percent) {
-  if (percent >= 90) return '🟥';
-  if (percent >= 85) return '🟧';
-  if (percent >= 75) return '🟨';
-  return '⬜';
+function usageAnsiCode(percent) {
+  if (percent >= 90) return '31'; // red
+  if (percent >= 85) return '33'; // amber (closest to orange)
+  if (percent >= 75) return '1;33'; // bright yellow
+  return '37'; // white
 }
 
 function usageBar(percent) {
   const filled = Math.max(0, Math.min(BAR_SEGMENTS, Math.round((percent / 100) * BAR_SEGMENTS)));
-  return usageSquare(percent).repeat(filled) + SQUARE_EMPTY.repeat(BAR_SEGMENTS - filled);
+  const colored = `${ESC}[${usageAnsiCode(percent)}m${FILLED.repeat(filled)}${ESC}[0m`;
+  return colored + EMPTY.repeat(BAR_SEGMENTS - filled);
 }
 
 const DATA_DIR = new URL('../data/', import.meta.url);
@@ -114,12 +119,11 @@ export function buildSystemEmbed(stats) {
   const fields = [{ name: 'Uptime', value: f.uptime, inline: false }];
   for (const metric of usageMetrics(stats)) {
     const percent = Math.round(metric.percent);
-    const detail = metric.detail ? ` (${metric.detail})` : '';
-    fields.push({
-      name: metric.label,
-      value: `${usageBar(metric.percent)} ${percent}%${detail}`,
-      inline: false,
-    });
+    // The closing ``` must sit on its own line, or Discord never closes the
+    // code block. Build the value line-by-line to guarantee that.
+    const lines = ['```ansi', `${usageBar(metric.percent)} ${percent}%`, '```'];
+    if (metric.detail) lines.push(`(${metric.detail})`);
+    fields.push({ name: metric.label, value: lines.join('\n'), inline: false });
   }
   return new EmbedBuilder()
     .setTitle('System')

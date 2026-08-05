@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import config from './config.js';
 import { snapshotAll } from './services.js';
 import { serviceState } from './state.js';
+import { fetchSystemStats, formatSystemFields, panelConfigured, refreshMs } from './panel.js';
 
 const COLOR_ONLINE = 0x57f287;
 const COLOR_OFFLINE = 0xed4245;
@@ -10,9 +11,12 @@ const COLOR_PARTIAL = 0xfee75c;
 
 const DATA_DIR = new URL('../data/', import.meta.url);
 const DATA_FILE = new URL('../data/dashboard.json', import.meta.url);
-export const UPDATE_INTERVAL_MS = 30_000;
+export const DASHBOARD_INTERVAL_MS = 30_000;
 
-let location = null; // { channelId, messageId }
+// { channelId, dashboardMessageId, systemMessageId }
+let location = null;
+// Cached Message objects so the 1s system loop is a single PATCH, not a fetch chain.
+const cache = { dashboard: null, system: null };
 
 function loadLocation() {
   try {
@@ -22,28 +26,35 @@ function loadLocation() {
   }
 }
 
-function clearLocation() {
-  location = null;
+function persistLocation() {
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(DATA_FILE, JSON.stringify(location));
+}
+
+async function deleteIfPresent(client, messageId) {
+  if (!location?.channelId || !messageId) return;
   try {
-    rmSync(DATA_FILE);
+    const channel = await client.channels.fetch(location.channelId);
+    const old = await channel.messages.fetch(messageId);
+    await old.delete();
   } catch {
     // Already gone.
   }
 }
 
-export async function setDashboardMessage(message) {
-  if (location && location.messageId !== message.id) {
-    try {
-      const channel = await message.client.channels.fetch(location.channelId);
-      const old = await channel.messages.fetch(location.messageId);
-      await old.delete();
-    } catch {
-      // Old dashboard message no longer exists.
-    }
+export async function setDashboardMessages(client, dashboardMessage, systemMessage) {
+  if (location) {
+    await deleteIfPresent(client, location.dashboardMessageId);
+    await deleteIfPresent(client, location.systemMessageId);
   }
-  location = { channelId: message.channelId, messageId: message.id };
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(DATA_FILE, JSON.stringify(location));
+  location = {
+    channelId: dashboardMessage.channelId,
+    dashboardMessageId: dashboardMessage.id,
+    systemMessageId: systemMessage?.id ?? null,
+  };
+  cache.dashboard = dashboardMessage;
+  cache.system = systemMessage ?? null;
+  persistLocation();
 }
 
 export function buildStatusEmbed(snapshots) {
@@ -57,18 +68,13 @@ export function buildStatusEmbed(snapshots) {
       else if (state === 'stopping') statusText = 'Stopping';
       else statusText = snap.running ? 'Online' : 'Offline';
       const lines = [`Status: ${statusText}`];
-      if (snap.running) {
-        lines.push(`CPU: ${snap.cpu != null ? `${snap.cpu.toFixed(1)}%` : 'n/a'}`);
-        lines.push(`RAM: ${snap.ram ?? 'n/a'}`);
-        lines.push(`Uptime: ${snap.uptime ?? 'n/a'}`);
-        if (service.ping) {
-          lines.push(
-            snap.ping
-              ? `Players: ${snap.ping.online}/${snap.ping.max}` +
-                  (snap.ping.version ? ` (${snap.ping.version})` : '')
-              : 'Players: n/a',
-          );
-        }
+      if (snap.running && service.ping) {
+        lines.push(
+          snap.ping
+            ? `Players: ${snap.ping.online}/${snap.ping.max}` +
+                (snap.ping.version ? ` (${snap.ping.version})` : '')
+            : 'Players: n/a',
+        );
       }
       return { name: service.name, value: lines.join('\n'), inline: true };
     }),
@@ -78,6 +84,19 @@ export function buildStatusEmbed(snapshots) {
     online === snapshots.length ? COLOR_ONLINE : online === 0 ? COLOR_OFFLINE : COLOR_PARTIAL,
   );
   return embed;
+}
+
+export function buildSystemEmbed(stats) {
+  const f = formatSystemFields(stats);
+  return new EmbedBuilder()
+    .setTitle('System')
+    .setColor(f.online ? COLOR_ONLINE : COLOR_OFFLINE)
+    .addFields(
+      { name: 'Uptime', value: f.uptime, inline: true },
+      { name: 'CPU', value: f.cpu, inline: true },
+      { name: 'RAM', value: f.ram, inline: true },
+    )
+    .setTimestamp(new Date());
 }
 
 export function buildControlRows(snapshots) {
@@ -109,20 +128,32 @@ export function buildControlRows(snapshots) {
   });
 }
 
+// 10008 Unknown Message / 10003 Unknown Channel: the message was deleted.
+function isDeleted(err) {
+  return err?.code === 10008 || err?.code === 10003;
+}
+
+async function resolveMessage(client, which, messageId) {
+  if (cache[which]) return cache[which];
+  const channel = await client.channels.fetch(location.channelId);
+  cache[which] = await channel.messages.fetch(messageId);
+  return cache[which];
+}
+
 export async function updateDashboard(client) {
-  if (!location) return;
+  if (!location?.dashboardMessageId) return;
   try {
-    const channel = await client.channels.fetch(location.channelId);
-    const message = await channel.messages.fetch(location.messageId);
+    const message = await resolveMessage(client, 'dashboard', location.dashboardMessageId);
     const snapshots = await snapshotAll();
     await message.edit({
       embeds: [buildStatusEmbed(snapshots)],
       components: buildControlRows(snapshots),
     });
   } catch (err) {
-    // 10008 Unknown Message / 10003 Unknown Channel: the dashboard was deleted.
-    if (err?.code === 10008 || err?.code === 10003) {
-      clearLocation();
+    cache.dashboard = null;
+    if (isDeleted(err)) {
+      location.dashboardMessageId = null;
+      persistLocation();
       console.warn('Dashboard message was deleted; run /dashboard setup again.');
     } else {
       console.error('Dashboard update failed:', err);
@@ -130,8 +161,37 @@ export async function updateDashboard(client) {
   }
 }
 
+async function updateSystem(client) {
+  if (!location?.systemMessageId || !panelConfigured()) return;
+  try {
+    const stats = await fetchSystemStats();
+    const message = await resolveMessage(client, 'system', location.systemMessageId);
+    await message.edit({ embeds: [buildSystemEmbed(stats)] });
+  } catch (err) {
+    if (isDeleted(err)) {
+      cache.system = null;
+      location.systemMessageId = null;
+      persistLocation();
+      console.warn('System message was deleted; run /dashboard setup again.');
+    } else {
+      // Transient panel/API hiccup: keep the loop alive, log quietly.
+      console.error('System update failed:', err.message ?? err);
+    }
+  }
+}
+
+// Chained timeout (not setInterval) so a slow fetch/edit never overlaps itself.
+function runSystemLoop(client) {
+  const tick = async () => {
+    await updateSystem(client);
+    setTimeout(tick, refreshMs);
+  };
+  tick();
+}
+
 export function startUpdater(client) {
   loadLocation();
   updateDashboard(client);
-  setInterval(() => updateDashboard(client), UPDATE_INTERVAL_MS);
+  setInterval(() => updateDashboard(client), DASHBOARD_INTERVAL_MS);
+  if (panelConfigured()) runSystemLoop(client);
 }

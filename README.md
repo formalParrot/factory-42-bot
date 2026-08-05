@@ -1,20 +1,25 @@
 # server-manage-bot
 
-Discord bot that manages a Velocity proxy and a Minecraft server running in tmux sessions on the same machine. It provides a live dashboard embed with per-service status, CPU, RAM, uptime and player count, plus Start / Stop / Restart buttons.
+Discord bot that manages a Velocity proxy and a Minecraft server running in tmux sessions on the same machine. It provides a live dashboard embed with per-service status and player count, plus Start / Stop / Restart buttons, and a separate System embed showing the whole container's uptime, CPU and RAM pulled from the Proxmox panel API.
 
 ## Requirements
 
 - Node.js 18+
 - tmux
 - The bot must run on the same machine as the Minecraft server and Velocity, under a user that can run `tmux`, `ps` and `pgrep`.
+- A Proxmox panel API key (for the System embed's uptime/CPU/RAM).
 
 ## Setup
 
 1. Create an application at the Discord Developer Portal, add a Bot, and copy its token.
 2. Invite the bot to your server with the `bot` and `applications.commands` scopes and permission to send messages in the status channel.
-3. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN` (and optionally `GUILD_ID` for instant command registration).
+3. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN` (and optionally `GUILD_ID` for instant command registration). Set `API_BASE_URL` (e.g. `https://panel.awdevhardware.org/api`) and `PANEL_TOKEN` (a `pvd_k_...` bearer key) for the System embed.
 4. Edit `config.json`:
    - `adminRoleId` — role allowed to use the control buttons (server administrators are always allowed).
+   - `panel` — Proxmox container the System embed reports on:
+     - `node` — Proxmox node name (e.g. `awdevHardware6`).
+     - `vmid` — container ID (e.g. `185`).
+     - `refreshSeconds` — how often to poll the panel and refresh the System embed.
    - `services` — one entry per process. Each needs:
      - `name` — display name in the embed.
      - `tmuxSession` — tmux session name the bot creates/controls.
@@ -35,8 +40,8 @@ Discord bot that manages a Velocity proxy and a Minecraft server running in tmux
 
 | Command | Access | Description |
 |---|---|---|
-| `/dashboard setup` | Admin | Posts the live dashboard in the current channel. Auto-updates every 30 seconds with status, CPU, RAM, uptime and player count per service. |
-| `/status` | Everyone | One-time status snapshot of all services. |
+| `/dashboard setup` | Admin | Posts the live dashboard in the current channel: a per-service status embed with control buttons (refreshed every 30 seconds), plus a System embed with the container's uptime, CPU and RAM (refreshed every `refreshSeconds`). |
+| `/status` | Everyone | One-time status snapshot of all services, plus the System stats. |
 | `/announce [channel]` | Admin | Opens a form (title + multi-line message) and posts it as an embed in the chosen channel (defaults to the current one). |
 | `/modpack file: [channel]` | Admin | Attach a `.mrpack`/`.zip`, then fill in a version + changelog form. Posts an embed with the changelog and the file attached for download. |
 
@@ -55,7 +60,7 @@ Each service on the dashboard has its own row:
 - tmux is the process supervisor, not the bot: restarting or crashing the bot never stops the servers. On startup the bot re-detects running sessions and resumes the dashboard.
 - Stop is graceful: the bot types the stop command into the server console and waits up to 60 seconds before force-killing the session.
 - Stop and Restart ask for confirmation, since they disconnect online players.
-- CPU/RAM are measured on the actual java process found inside the tmux session; uptime comes from `ps` so it stays correct across bot restarts.
+- Uptime, CPU and RAM in the System embed are the whole container's, read live from the Proxmox panel API rather than per-service — so they stay correct across bot restarts and don't depend on `ps` parsing.
 
 ## Running the bot itself in the background
 

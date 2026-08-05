@@ -1,5 +1,10 @@
 {
   "adminRoleId": "1534270776876863623",
+  "panel": {
+    "node": "awdevHardware6",
+    "vmid": 185,
+    "refreshSeconds": 2
+  },
   "services": [
     {
       "name": "Velocity",

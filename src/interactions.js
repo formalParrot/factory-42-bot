@@ -15,10 +15,12 @@ import { snapshotAll } from './services.js';
 import {
   buildControlRows,
   buildStatusEmbed,
-  setDashboardMessage,
+  buildSystemEmbed,
+  setDashboardMessages,
   updateDashboard,
 } from './dashboard.js';
 import { restartService, startService, stopService } from './actions.js';
+import { fetchSystemStats, panelConfigured } from './panel.js';
 import { serviceState } from './state.js';
 
 const POST_COLOR = 0x5865f2;
@@ -45,7 +47,15 @@ async function handleCommand(interaction) {
   if (commandName === 'status') {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const snapshots = await snapshotAll();
-    return interaction.editReply({ embeds: [buildStatusEmbed(snapshots)] });
+    const embeds = [buildStatusEmbed(snapshots)];
+    if (panelConfigured()) {
+      try {
+        embeds.push(buildSystemEmbed(await fetchSystemStats()));
+      } catch {
+        // Panel unreachable; show service status only.
+      }
+    }
+    return interaction.editReply({ embeds });
   }
 
   if (!isAdmin(interaction.member)) {
@@ -58,12 +68,25 @@ async function handleCommand(interaction) {
   if (commandName === 'dashboard') {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const snapshots = await snapshotAll();
-    const message = await interaction.channel.send({
+    let systemMessage = null;
+    if (panelConfigured()) {
+      try {
+        systemMessage = await interaction.channel.send({
+          embeds: [buildSystemEmbed(await fetchSystemStats())],
+        });
+      } catch {
+        // Panel unreachable at setup; the live loop will populate it later.
+        systemMessage = await interaction.channel.send({
+          embeds: [new EmbedBuilder().setTitle('System').setDescription('Waiting for panel...')],
+        });
+      }
+    }
+    const dashboardMessage = await interaction.channel.send({
       embeds: [buildStatusEmbed(snapshots)],
       components: buildControlRows(snapshots),
     });
-    await setDashboardMessage(message);
-    return interaction.editReply('Dashboard created. It updates every 30 seconds.');
+    await setDashboardMessages(interaction.client, dashboardMessage, systemMessage);
+    return interaction.editReply('Dashboard created.');
   }
 
   if (commandName === 'announce') {

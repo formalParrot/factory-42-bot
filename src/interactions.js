@@ -15,7 +15,7 @@ import { snapshotAll } from './services.js';
 import {
   buildControlRows,
   buildStatusEmbed,
-  buildSystemEmbed,
+  buildSystemEmbeds,
   setDashboardMessages,
   updateDashboard,
 } from './dashboard.js';
@@ -50,7 +50,7 @@ async function handleCommand(interaction) {
     const embeds = [buildStatusEmbed(snapshots)];
     if (panelConfigured()) {
       try {
-        embeds.push(buildSystemEmbed(await fetchSystemStats()));
+        embeds.push(...buildSystemEmbeds(await fetchSystemStats()));
       } catch {
         // Panel unreachable; show service status only.
       }
@@ -72,7 +72,7 @@ async function handleCommand(interaction) {
     if (panelConfigured()) {
       try {
         systemMessage = await interaction.channel.send({
-          embeds: [buildSystemEmbed(await fetchSystemStats())],
+          embeds: buildSystemEmbeds(await fetchSystemStats()),
         });
       } catch {
         // Panel unreachable at setup; the live loop will populate it later.

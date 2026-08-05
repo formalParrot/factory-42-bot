@@ -35,6 +35,21 @@ function formatBytes(bytes) {
   return `${Math.round(bytes / 1024 ** 2)} MB`;
 }
 
+// Per-metric utilisation for the bar-graph embeds: percent 0..100 plus a detail
+// string of the underlying numbers.
+export function usageMetrics(stats) {
+  const cpuPercent = stats.cpuFraction * 100;
+  const ramPercent = stats.maxMemBytes ? (stats.memBytes / stats.maxMemBytes) * 100 : 0;
+  return [
+    { label: 'CPU', percent: cpuPercent, detail: stats.cpus ? `across ${stats.cpus} cores` : '' },
+    {
+      label: 'RAM',
+      percent: ramPercent,
+      detail: `${formatBytes(stats.memBytes)} / ${formatBytes(stats.maxMemBytes)}`,
+    },
+  ];
+}
+
 export function formatSystemFields(stats) {
   const cpuPercent = (stats.cpuFraction * 100).toFixed(1);
   const cpuLine = stats.cpus ? `${cpuPercent}% of ${stats.cpus} cores` : `${cpuPercent}%`;

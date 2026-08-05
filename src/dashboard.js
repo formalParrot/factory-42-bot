@@ -3,11 +3,36 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import config from './config.js';
 import { snapshotAll } from './services.js';
 import { serviceState } from './state.js';
-import { fetchSystemStats, formatSystemFields, panelConfigured, refreshMs } from './panel.js';
+import {
+  fetchSystemStats,
+  formatSystemFields,
+  panelConfigured,
+  refreshMs,
+  usageMetrics,
+} from './panel.js';
 
 const COLOR_ONLINE = 0x57f287;
 const COLOR_OFFLINE = 0xed4245;
 const COLOR_PARTIAL = 0xfee75c;
+
+// Bar-graph embeds: border escalates white -> yellow -> orange -> red with usage.
+const BAR_WIDTH = 20;
+const USAGE_WHITE = 0xffffff;
+const USAGE_YELLOW = 0xfee75c;
+const USAGE_ORANGE = 0xe67e22;
+const USAGE_RED = 0xed4245;
+
+function usageColor(percent) {
+  if (percent >= 90) return USAGE_RED;
+  if (percent >= 85) return USAGE_ORANGE;
+  if (percent >= 75) return USAGE_YELLOW;
+  return USAGE_WHITE;
+}
+
+function usageBar(percent) {
+  const filled = Math.max(0, Math.min(BAR_WIDTH, Math.round((percent / 100) * BAR_WIDTH)));
+  return '█'.repeat(filled) + '░'.repeat(BAR_WIDTH - filled);
+}
 
 const DATA_DIR = new URL('../data/', import.meta.url);
 const DATA_FILE = new URL('../data/dashboard.json', import.meta.url);
@@ -99,6 +124,22 @@ export function buildSystemEmbed(stats) {
     .setTimestamp(new Date());
 }
 
+export function buildUsageEmbeds(stats) {
+  return usageMetrics(stats).map((metric) => {
+    const percent = Math.round(metric.percent);
+    const detail = metric.detail ? `\n${metric.detail}` : '';
+    return new EmbedBuilder()
+      .setTitle(metric.label)
+      .setColor(usageColor(metric.percent))
+      .setDescription(`\`\`\`\n${usageBar(metric.percent)} ${percent}%\n\`\`\`${detail}`);
+  });
+}
+
+// The full System message: the stats embed followed by one bar-graph per metric.
+export function buildSystemEmbeds(stats) {
+  return [buildSystemEmbed(stats), ...buildUsageEmbeds(stats)];
+}
+
 export function buildControlRows(snapshots) {
   return config.services.map((service, i) => {
     const running = snapshots[i].running;
@@ -166,7 +207,7 @@ async function updateSystem(client) {
   try {
     const stats = await fetchSystemStats();
     const message = await resolveMessage(client, 'system', location.systemMessageId);
-    await message.edit({ embeds: [buildSystemEmbed(stats)] });
+    await message.edit({ embeds: buildSystemEmbeds(stats) });
   } catch (err) {
     if (isDeleted(err)) {
       cache.system = null;

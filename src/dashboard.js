@@ -202,8 +202,6 @@ export async function updateDashboard(client) {
   }
 }
 
-let lastSystemSig = null;
-
 async function updateSystem(client) {
   if (!location?.systemMessageId || !panelConfigured()) return;
   try {

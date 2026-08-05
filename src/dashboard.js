@@ -45,6 +45,8 @@ export const DASHBOARD_INTERVAL_MS = 30_000;
 let location = null;
 // Cached Message objects so the 1s system loop is a single PATCH, not a fetch chain.
 const cache = { dashboard: null, system: null };
+// Signature of the last System embed we sent, to skip no-op edits.
+let lastSystemSig = null;
 
 function loadLocation() {
   try {
@@ -82,6 +84,7 @@ export async function setDashboardMessages(client, dashboardMessage, systemMessa
   };
   cache.dashboard = dashboardMessage;
   cache.system = systemMessage ?? null;
+  lastSystemSig = null; // force a first render onto the new message
   persistLocation();
 }
 
@@ -199,12 +202,20 @@ export async function updateDashboard(client) {
   }
 }
 
+let lastSystemSig = null;
+
 async function updateSystem(client) {
   if (!location?.systemMessageId || !panelConfigured()) return;
   try {
     const stats = await fetchSystemStats();
+    const embeds = buildSystemEmbeds(stats);
+    // Only edit when something visible changed. The timestamp is excluded, so a
+    // steady reading doesn't re-edit every tick and re-flicker the code block.
+    const sig = JSON.stringify(embeds.map((e) => [e.data.color, e.data.fields]));
+    if (sig === lastSystemSig) return;
     const message = await resolveMessage(client, 'system', location.systemMessageId);
-    await message.edit({ embeds: buildSystemEmbeds(stats) });
+    await message.edit({ embeds });
+    lastSystemSig = sig;
   } catch (err) {
     if (isDeleted(err)) {
       cache.system = null;

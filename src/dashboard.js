@@ -15,23 +15,21 @@ const COLOR_ONLINE = 0x57f287;
 const COLOR_OFFLINE = 0xed4245;
 const COLOR_PARTIAL = 0xfee75c;
 
-// Bar-graph embeds: border escalates white -> yellow -> orange -> red with usage.
-const BAR_WIDTH = 20;
-const USAGE_WHITE = 0xffffff;
-const USAGE_YELLOW = 0xfee75c;
-const USAGE_ORANGE = 0xe67e22;
-const USAGE_RED = 0xed4245;
+// Bar-graph segments. The filled squares themselves escalate in colour with
+// usage (white -> yellow -> orange -> red); the unfilled part stays dark.
+const BAR_SEGMENTS = 10;
+const SQUARE_EMPTY = '⬛';
 
-function usageColor(percent) {
-  if (percent >= 90) return USAGE_RED;
-  if (percent >= 85) return USAGE_ORANGE;
-  if (percent >= 75) return USAGE_YELLOW;
-  return USAGE_WHITE;
+function usageSquare(percent) {
+  if (percent >= 90) return '🟥';
+  if (percent >= 85) return '🟧';
+  if (percent >= 75) return '🟨';
+  return '⬜';
 }
 
 function usageBar(percent) {
-  const filled = Math.max(0, Math.min(BAR_WIDTH, Math.round((percent / 100) * BAR_WIDTH)));
-  return '█'.repeat(filled) + '░'.repeat(BAR_WIDTH - filled);
+  const filled = Math.max(0, Math.min(BAR_SEGMENTS, Math.round((percent / 100) * BAR_SEGMENTS)));
+  return usageSquare(percent).repeat(filled) + SQUARE_EMPTY.repeat(BAR_SEGMENTS - filled);
 }
 
 const DATA_DIR = new URL('../data/', import.meta.url);
@@ -113,31 +111,26 @@ export function buildStatusEmbed(snapshots) {
 
 export function buildSystemEmbed(stats) {
   const f = formatSystemFields(stats);
+  const fields = [{ name: 'Uptime', value: f.uptime, inline: false }];
+  for (const metric of usageMetrics(stats)) {
+    const percent = Math.round(metric.percent);
+    const detail = metric.detail ? ` (${metric.detail})` : '';
+    fields.push({
+      name: metric.label,
+      value: `${usageBar(metric.percent)} ${percent}%${detail}`,
+      inline: false,
+    });
+  }
   return new EmbedBuilder()
     .setTitle('System')
     .setColor(f.online ? COLOR_ONLINE : COLOR_OFFLINE)
-    .addFields(
-      { name: 'Uptime', value: f.uptime, inline: true },
-      { name: 'CPU', value: f.cpu, inline: true },
-      { name: 'RAM', value: f.ram, inline: true },
-    )
+    .addFields(fields)
     .setTimestamp(new Date());
 }
 
-export function buildUsageEmbeds(stats) {
-  return usageMetrics(stats).map((metric) => {
-    const percent = Math.round(metric.percent);
-    const detail = metric.detail ? `\n${metric.detail}` : '';
-    return new EmbedBuilder()
-      .setTitle(metric.label)
-      .setColor(usageColor(metric.percent))
-      .setDescription(`\`\`\`\n${usageBar(metric.percent)} ${percent}%\n\`\`\`${detail}`);
-  });
-}
-
-// The full System message: the stats embed followed by one bar-graph per metric.
+// Kept as a single-element array so callers can spread it into a message's embeds.
 export function buildSystemEmbeds(stats) {
-  return [buildSystemEmbed(stats), ...buildUsageEmbeds(stats)];
+  return [buildSystemEmbed(stats)];
 }
 
 export function buildControlRows(snapshots) {

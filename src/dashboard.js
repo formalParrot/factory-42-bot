@@ -106,8 +106,7 @@ export function buildStatusEmbed(snapshots) {
       if (snap.running && service.ping) {
         lines.push(
           snap.ping
-            ? `Players: ${snap.ping.online}/${snap.ping.max}` +
-                (snap.ping.version ? ` (${snap.ping.version})` : '')
+            ? `Players: ${snap.ping.online}/${snap.ping.max}`
             : 'Players: n/a',
         );
       }

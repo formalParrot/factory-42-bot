@@ -15,12 +15,20 @@
       "ping": { "host": "127.0.0.1", "port": 25565 }
     },
     {
-      "name": "Minecraft Server",
+      "name": "Survival",
       "tmuxSession": "mcserver",
       "cwd": "/root/server",
       "startCommand": "bash run.sh",
       "stopConsoleCommand": "stop",
       "ping": { "host": "127.0.0.1", "port": 25566 }
+    },
+    {
+      "name": "Creative",
+      "tmuxSession": "mcserver-creative",
+      "cwd": "/root/creative",
+      "startCommand": "bash run.sh",
+      "stopConsoleCommand": "stop",
+      "ping": { "host": "127.0.0.1", "port": 25567 }
     }
   ]
 }

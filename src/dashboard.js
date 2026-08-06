@@ -14,6 +14,10 @@ import {
 const COLOR_ONLINE = 0x57f287;
 const COLOR_OFFLINE = 0xed4245;
 const COLOR_PARTIAL = 0xfee75c;
+// System and control embeds use a fixed colour so they don't flicker between
+// states; only the public status embed tracks online/offline colour.
+const COLOR_SYSTEM = 0x5865f2;
+const COLOR_CONTROL = 0x5865f2;
 
 // Bar-graph segments. Coloured emoji squares escalate with usage
 // (white -> yellow -> orange -> red). Emoji render inline with no code block,
@@ -37,10 +41,10 @@ const DATA_DIR = new URL('../data/', import.meta.url);
 const DATA_FILE = new URL('../data/dashboard.json', import.meta.url);
 export const DASHBOARD_INTERVAL_MS = 30_000;
 
-// { channelId, dashboardMessageId, systemMessageId }
+// { channelId, dashboardMessageId, systemMessageId, controlChannelId, controlMessageId }
 let location = null;
 // Cached Message objects so the 1s system loop is a single PATCH, not a fetch chain.
-const cache = { dashboard: null, system: null };
+const cache = { dashboard: null, system: null, control: null };
 // Signature of the last System embed we sent, to skip no-op edits.
 let lastSystemSig = null;
 
@@ -57,10 +61,10 @@ function persistLocation() {
   writeFileSync(DATA_FILE, JSON.stringify(location));
 }
 
-async function deleteIfPresent(client, messageId) {
-  if (!location?.channelId || !messageId) return;
+async function deleteIfPresent(client, channelId, messageId) {
+  if (!channelId || !messageId) return;
   try {
-    const channel = await client.channels.fetch(location.channelId);
+    const channel = await client.channels.fetch(channelId);
     const old = await channel.messages.fetch(messageId);
     await old.delete();
   } catch {
@@ -68,18 +72,22 @@ async function deleteIfPresent(client, messageId) {
   }
 }
 
-export async function setDashboardMessages(client, dashboardMessage, systemMessage) {
+export async function setDashboardMessages(client, dashboardMessage, systemMessage, controlMessage) {
   if (location) {
-    await deleteIfPresent(client, location.dashboardMessageId);
-    await deleteIfPresent(client, location.systemMessageId);
+    await deleteIfPresent(client, location.channelId, location.dashboardMessageId);
+    await deleteIfPresent(client, location.channelId, location.systemMessageId);
+    await deleteIfPresent(client, location.controlChannelId, location.controlMessageId);
   }
   location = {
     channelId: dashboardMessage.channelId,
     dashboardMessageId: dashboardMessage.id,
     systemMessageId: systemMessage?.id ?? null,
+    controlChannelId: controlMessage?.channelId ?? null,
+    controlMessageId: controlMessage?.id ?? null,
   };
   cache.dashboard = dashboardMessage;
   cache.system = systemMessage ?? null;
+  cache.control = controlMessage ?? null;
   lastSystemSig = null; // force a first render onto the new message
   persistLocation();
 }
@@ -127,7 +135,7 @@ export function buildSystemEmbed(stats) {
   }
   return new EmbedBuilder()
     .setTitle('System')
-    .setColor(f.online ? COLOR_ONLINE : COLOR_OFFLINE)
+    .setColor(COLOR_SYSTEM)
     .addFields(fields)
     .setTimestamp(new Date());
 }
@@ -135,6 +143,14 @@ export function buildSystemEmbed(stats) {
 // Kept as a single-element array so callers can spread it into a message's embeds.
 export function buildSystemEmbeds(stats) {
   return [buildSystemEmbed(stats)];
+}
+
+// Header for the mod-only control message that carries the start/stop/restart rows.
+export function buildControlEmbed() {
+  return new EmbedBuilder()
+    .setTitle('Server Controls')
+    .setColor(COLOR_CONTROL)
+    .setDescription('Start, stop, or restart a server.');
 }
 
 export function buildControlRows(snapshots) {
@@ -171,30 +187,56 @@ function isDeleted(err) {
   return err?.code === 10008 || err?.code === 10003;
 }
 
-async function resolveMessage(client, which, messageId) {
+async function resolveMessage(client, which, channelId, messageId) {
   if (cache[which]) return cache[which];
-  const channel = await client.channels.fetch(location.channelId);
+  const channel = await client.channels.fetch(channelId);
   cache[which] = await channel.messages.fetch(messageId);
   return cache[which];
 }
 
 export async function updateDashboard(client) {
-  if (!location?.dashboardMessageId) return;
-  try {
-    const message = await resolveMessage(client, 'dashboard', location.dashboardMessageId);
-    const snapshots = await snapshotAll();
-    await message.edit({
-      embeds: [buildStatusEmbed(snapshots)],
-      components: buildControlRows(snapshots),
-    });
-  } catch (err) {
-    cache.dashboard = null;
-    if (isDeleted(err)) {
-      location.dashboardMessageId = null;
-      persistLocation();
-      console.warn('Dashboard message was deleted; run /dashboard setup again.');
-    } else {
-      console.error('Dashboard update failed:', err);
+  if (!location?.dashboardMessageId && !location?.controlMessageId) return;
+  const snapshots = await snapshotAll();
+
+  if (location?.dashboardMessageId) {
+    try {
+      const message = await resolveMessage(
+        client,
+        'dashboard',
+        location.channelId,
+        location.dashboardMessageId,
+      );
+      await message.edit({ embeds: [buildStatusEmbed(snapshots)] });
+    } catch (err) {
+      cache.dashboard = null;
+      if (isDeleted(err)) {
+        location.dashboardMessageId = null;
+        persistLocation();
+        console.warn('Dashboard message was deleted; run /dashboard setup again.');
+      } else {
+        console.error('Dashboard update failed:', err);
+      }
+    }
+  }
+
+  if (location?.controlMessageId) {
+    try {
+      const message = await resolveMessage(
+        client,
+        'control',
+        location.controlChannelId,
+        location.controlMessageId,
+      );
+      await message.edit({ components: buildControlRows(snapshots) });
+    } catch (err) {
+      cache.control = null;
+      if (isDeleted(err)) {
+        location.controlMessageId = null;
+        persistLocation();
+        console.warn('Control message was deleted; run /dashboard setup again.');
+      } else {
+        console.error('Control update failed:', err);
+      }
     }
   }
 }
@@ -208,7 +250,12 @@ async function updateSystem(client) {
     // steady reading doesn't re-edit every tick and re-flicker the code block.
     const sig = JSON.stringify(embeds.map((e) => [e.data.color, e.data.fields]));
     if (sig === lastSystemSig) return;
-    const message = await resolveMessage(client, 'system', location.systemMessageId);
+    const message = await resolveMessage(
+      client,
+      'system',
+      location.channelId,
+      location.systemMessageId,
+    );
     await message.edit({ embeds });
     lastSystemSig = sig;
   } catch (err) {

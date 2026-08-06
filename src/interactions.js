@@ -13,6 +13,7 @@ import {
 import config from './config.js';
 import { snapshotAll } from './services.js';
 import {
+  buildControlEmbed,
   buildControlRows,
   buildStatusEmbed,
   buildSystemEmbeds,
@@ -67,6 +68,7 @@ async function handleCommand(interaction) {
 
   if (commandName === 'dashboard') {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const controlsChannel = interaction.options.getChannel('controls', true);
     const snapshots = await snapshotAll();
     let systemMessage = null;
     if (panelConfigured()) {
@@ -83,10 +85,13 @@ async function handleCommand(interaction) {
     }
     const dashboardMessage = await interaction.channel.send({
       embeds: [buildStatusEmbed(snapshots)],
+    });
+    const controlMessage = await controlsChannel.send({
+      embeds: [buildControlEmbed()],
       components: buildControlRows(snapshots),
     });
-    await setDashboardMessages(interaction.client, dashboardMessage, systemMessage);
-    return interaction.editReply('Dashboard created.');
+    await setDashboardMessages(interaction.client, dashboardMessage, systemMessage, controlMessage);
+    return interaction.editReply(`Dashboard created. Controls posted in <#${controlsChannel.id}>.`);
   }
 
   if (commandName === 'announce') {

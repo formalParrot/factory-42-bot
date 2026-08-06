@@ -7,7 +7,16 @@ export const commandData = [
     .setName('dashboard')
     .setDescription('Manage the live server dashboard')
     .addSubcommand((sub) =>
-      sub.setName('setup').setDescription('Post the live dashboard in this channel'),
+      sub
+        .setName('setup')
+        .setDescription('Post the live dashboard in this channel')
+        .addChannelOption((opt) =>
+          opt
+            .setName('controls')
+            .setDescription('Mod-only channel for the start/stop/restart controls')
+            .addChannelTypes(...postableChannels)
+            .setRequired(true),
+        ),
     ),
   new SlashCommandBuilder()
     .setName('status')

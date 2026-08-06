@@ -1,6 +1,6 @@
 # server-manage-bot
 
-Discord bot that manages a Velocity proxy and a Minecraft server running in tmux sessions on the same machine. It provides a live dashboard embed with per-service status and player count, plus Start / Stop / Restart buttons, and a separate System embed showing the whole container's uptime, CPU and RAM pulled from the Proxmox panel API.
+Discord bot that manages a Velocity proxy and a Minecraft server running in tmux sessions on the same machine. It provides a live dashboard embed with per-service status and player count, a separate System embed showing the whole container's uptime, CPU and RAM pulled from the Proxmox panel API, and a mod-only control message with Start / Stop / Restart buttons posted in a separate channel.
 
 ## Requirements
 
@@ -34,22 +34,22 @@ Discord bot that manages a Velocity proxy and a Minecraft server running in tmux
    npm start
    ```
 
-6. In Discord, run `/dashboard setup` in the channel where the dashboard should live. The embed updates every 30 seconds.
+6. In Discord, run `/dashboard setup controls:#your-mod-channel` in the channel where the dashboard should live. The status and System embeds are posted in the current channel; the control buttons are posted in the mod-only channel you pass as `controls`. The embeds update every 30 seconds.
 
 ## Commands
 
 | Command | Access | Description |
 |---|---|---|
-| `/dashboard setup` | Admin | Posts the live dashboard in the current channel: a per-service status embed with control buttons (refreshed every 30 seconds), plus a System embed with the container's uptime, CPU and RAM (refreshed every `refreshSeconds`). |
+| `/dashboard setup controls:` | Admin | Posts the live dashboard in the current channel: a per-service status embed (refreshed every 30 seconds) plus a System embed with the container's uptime, CPU and RAM (refreshed every `refreshSeconds`). The Start/Stop/Restart control buttons are posted as a separate message in the mod-only `controls` channel. |
 | `/status` | Everyone | One-time status snapshot of all services, plus the System stats. |
 | `/announce [channel]` | Admin | Opens a form (title + multi-line message) and posts it as an embed in the chosen channel (defaults to the current one). |
 | `/modpack file: [channel]` | Admin | Attach a `.mrpack`/`.zip`, then fill in a version + changelog form. Posts an embed with the changelog and the file attached for download. |
 
 "Admin" means members with the `adminRoleId` role from `config.json`, or the server Administrator permission.
 
-### Dashboard buttons (admin only)
+### Control buttons (admin only)
 
-Each service on the dashboard has its own row:
+The control message lives in the mod-only `controls` channel. Each service has its own row:
 
 - **Start** — creates the tmux session and launches the server. Disabled while running.
 - **Stop** — asks for confirmation, then sends the graceful stop command; force-kills after 60 seconds. Disabled while offline.

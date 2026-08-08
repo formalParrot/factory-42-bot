@@ -36,6 +36,11 @@ function isAdmin(member) {
   return config.adminRoleId ? member.roles.cache.has(config.adminRoleId) : false;
 }
 
+function canUseControls(member) {
+  if (isAdmin(member)) return true;
+  return config.techRoleId ? member.roles.cache.has(config.techRoleId) : false;
+}
+
 export async function handleInteraction(interaction) {
   if (interaction.isChatInputCommand()) return handleCommand(interaction);
   if (interaction.isButton()) return handleButton(interaction);
@@ -162,7 +167,7 @@ async function handleButton(interaction) {
   const [ns, action, arg] = interaction.customId.split(':');
 
   if (ns === 'dash') {
-    if (!isAdmin(interaction.member)) {
+    if (!canUseControls(interaction.member)) {
       return interaction.reply({
         content: 'You need the admin role to use these controls.',
         flags: MessageFlags.Ephemeral,
@@ -208,7 +213,7 @@ async function handleButton(interaction) {
     if (action === 'cancel') {
       return interaction.update({ content: 'Cancelled.', components: [] });
     }
-    if (!isAdmin(interaction.member)) return;
+    if (!canUseControls(interaction.member)) return;
     const index = Number(arg);
     const service = config.services[index];
     if (!service) return;

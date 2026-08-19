@@ -15,13 +15,16 @@ import { snapshotAll } from './services.js';
 import {
   buildControlEmbed,
   buildControlRows,
+  buildPlayerListEmbed,
   buildStatusEmbed,
-  buildSystemEmbeds,
+  buildSystemEmbed,
+  getLocation,
   setDashboardMessages,
   updateDashboard,
 } from './dashboard.js';
 import { restartService, startService, stopService } from './actions.js';
 import { fetchSystemStats, panelConfigured } from './panel.js';
+import { fetchPlayerList } from './rcon.js';
 import { serviceState } from './state.js';
 
 const POST_COLOR = 0x5865f2;
@@ -56,10 +59,16 @@ async function handleCommand(interaction) {
     const embeds = [buildStatusEmbed(snapshots)];
     if (panelConfigured()) {
       try {
-        embeds.push(...buildSystemEmbeds(await fetchSystemStats()));
+        embeds.push(buildSystemEmbed(await fetchSystemStats()));
       } catch {
         // Panel unreachable; show service status only.
       }
+    }
+    try {
+      const players = await fetchPlayerList();
+      embeds.push(buildPlayerListEmbed(players));
+    } catch {
+      // RCON unreachable; omit player list.
     }
     return interaction.editReply({ embeds });
   }
@@ -75,28 +84,56 @@ async function handleCommand(interaction) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const controlsChannel = interaction.options.getChannel('controls', true);
     const snapshots = await snapshotAll();
-    let systemMessage = null;
+    const embeds = [buildStatusEmbed(snapshots)];
     if (panelConfigured()) {
       try {
-        systemMessage = await interaction.channel.send({
-          embeds: buildSystemEmbeds(await fetchSystemStats()),
-        });
+        embeds.push(buildSystemEmbed(await fetchSystemStats()));
       } catch {
-        // Panel unreachable at setup; the live loop will populate it later.
-        systemMessage = await interaction.channel.send({
-          embeds: [new EmbedBuilder().setTitle('System').setDescription('Waiting for panel...')],
-        });
+        embeds.push(new EmbedBuilder().setTitle('System').setDescription('Waiting for panel...'));
       }
     }
-    const dashboardMessage = await interaction.channel.send({
-      embeds: [buildStatusEmbed(snapshots)],
-    });
-    const controlMessage = await controlsChannel.send({
-      embeds: [buildControlEmbed()],
-      components: buildControlRows(snapshots),
-    });
-    await setDashboardMessages(interaction.client, dashboardMessage, systemMessage, controlMessage);
-    return interaction.editReply(`Dashboard created. Controls posted in <#${controlsChannel.id}>.`);
+    try {
+      const players = await fetchPlayerList();
+      embeds.push(buildPlayerListEmbed(players));
+    } catch {
+      embeds.push(buildPlayerListEmbed([]));
+    }
+    const existing = getLocation();
+    let dashboardMessage;
+    if (existing?.dashboardMessageId) {
+      try {
+        const channel = await interaction.client.channels.fetch(existing.channelId);
+        dashboardMessage = await channel.messages.fetch(existing.dashboardMessageId);
+        await dashboardMessage.edit({ embeds });
+      } catch {
+        dashboardMessage = await interaction.channel.send({ embeds });
+      }
+    } else {
+      dashboardMessage = await interaction.channel.send({ embeds });
+    }
+    let controlMessage;
+    if (existing?.controlMessageId) {
+      try {
+        const channel = await interaction.client.channels.fetch(existing.controlChannelId);
+        controlMessage = await channel.messages.fetch(existing.controlMessageId);
+        await controlMessage.edit({
+          embeds: [buildControlEmbed()],
+          components: buildControlRows(snapshots),
+        });
+      } catch {
+        controlMessage = await controlsChannel.send({
+          embeds: [buildControlEmbed()],
+          components: buildControlRows(snapshots),
+        });
+      }
+    } else {
+      controlMessage = await controlsChannel.send({
+        embeds: [buildControlEmbed()],
+        components: buildControlRows(snapshots),
+      });
+    }
+    await setDashboardMessages(interaction.client, dashboardMessage, controlMessage);
+    return interaction.editReply(`Dashboard updated. Controls posted in <#${controlsChannel.id}>.`);
   }
 
   if (commandName === 'announce') {

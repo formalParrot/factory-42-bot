@@ -1,5 +1,5 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from 'discord.js';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import config from './config.js';
 import { snapshotAll } from './services.js';
 import { serviceState } from './state.js';
@@ -7,9 +7,9 @@ import {
   fetchSystemStats,
   formatSystemFields,
   panelConfigured,
-  refreshMs,
   usageMetrics,
 } from './panel.js';
+import { fetchPlayerList } from './rcon.js';
 
 const COLOR_ONLINE = 0x57f287;
 const COLOR_OFFLINE = 0xed4245;
@@ -41,12 +41,9 @@ const DATA_DIR = new URL('../data/', import.meta.url);
 const DATA_FILE = new URL('../data/dashboard.json', import.meta.url);
 export const DASHBOARD_INTERVAL_MS = 30_000;
 
-// { channelId, dashboardMessageId, systemMessageId, controlChannelId, controlMessageId }
+// { channelId, dashboardMessageId, controlChannelId, controlMessageId }
 let location = null;
-// Cached Message objects so the 1s system loop is a single PATCH, not a fetch chain.
-const cache = { dashboard: null, system: null, control: null };
-// Signature of the last System embed we sent, to skip no-op edits.
-let lastSystemSig = null;
+const cache = { dashboard: null, control: null };
 
 function loadLocation() {
   try {
@@ -61,34 +58,19 @@ function persistLocation() {
   writeFileSync(DATA_FILE, JSON.stringify(location));
 }
 
-async function deleteIfPresent(client, channelId, messageId) {
-  if (!channelId || !messageId) return;
-  try {
-    const channel = await client.channels.fetch(channelId);
-    const old = await channel.messages.fetch(messageId);
-    await old.delete();
-  } catch {
-    // Already gone.
-  }
+export function getLocation() {
+  return location;
 }
 
-export async function setDashboardMessages(client, dashboardMessage, systemMessage, controlMessage) {
-  if (location) {
-    await deleteIfPresent(client, location.channelId, location.dashboardMessageId);
-    await deleteIfPresent(client, location.channelId, location.systemMessageId);
-    await deleteIfPresent(client, location.controlChannelId, location.controlMessageId);
-  }
+export async function setDashboardMessages(client, dashboardMessage, controlMessage) {
   location = {
     channelId: dashboardMessage.channelId,
     dashboardMessageId: dashboardMessage.id,
-    systemMessageId: systemMessage?.id ?? null,
     controlChannelId: controlMessage?.channelId ?? null,
     controlMessageId: controlMessage?.id ?? null,
   };
   cache.dashboard = dashboardMessage;
-  cache.system = systemMessage ?? null;
   cache.control = controlMessage ?? null;
-  lastSystemSig = null; // force a first render onto the new message
   persistLocation();
 }
 
@@ -139,11 +121,6 @@ export function buildSystemEmbed(stats) {
     .setTimestamp(new Date());
 }
 
-// Kept as a single-element array so callers can spread it into a message's embeds.
-export function buildSystemEmbeds(stats) {
-  return [buildSystemEmbed(stats)];
-}
-
 // Header for the mod-only control message that carries the start/stop/restart rows.
 export function buildControlEmbed() {
   return new EmbedBuilder()
@@ -181,6 +158,15 @@ export function buildControlRows(snapshots) {
   });
 }
 
+export function buildPlayerListEmbed(players) {
+  const embed = new EmbedBuilder()
+    .setTitle('Player List')
+    .setColor(COLOR_SYSTEM)
+    .setTimestamp(new Date());
+  embed.setDescription(players.length ? players.join('\n') : 'No players online.');
+  return embed;
+}
+
 // 10008 Unknown Message / 10003 Unknown Channel: the message was deleted.
 function isDeleted(err) {
   return err?.code === 10008 || err?.code === 10003;
@@ -198,6 +184,20 @@ export async function updateDashboard(client) {
   const snapshots = await snapshotAll();
 
   if (location?.dashboardMessageId) {
+    const embeds = [buildStatusEmbed(snapshots)];
+    if (panelConfigured()) {
+      try {
+        embeds.push(buildSystemEmbed(await fetchSystemStats()));
+      } catch {
+        // Panel unreachable; omit system embed.
+      }
+    }
+    try {
+      const players = await fetchPlayerList();
+      embeds.push(buildPlayerListEmbed(players));
+    } catch {
+      embeds.push(buildPlayerListEmbed([]));
+    }
     try {
       const message = await resolveMessage(
         client,
@@ -205,7 +205,7 @@ export async function updateDashboard(client) {
         location.channelId,
         location.dashboardMessageId,
       );
-      await message.edit({ embeds: [buildStatusEmbed(snapshots)] });
+      await message.edit({ embeds });
     } catch (err) {
       cache.dashboard = null;
       if (isDeleted(err)) {
@@ -240,48 +240,8 @@ export async function updateDashboard(client) {
   }
 }
 
-async function updateSystem(client) {
-  if (!location?.systemMessageId || !panelConfigured()) return;
-  try {
-    const stats = await fetchSystemStats();
-    const embeds = buildSystemEmbeds(stats);
-    // Only edit when something visible changed. The timestamp is excluded, so a
-    // steady reading doesn't re-edit every tick and re-flicker the code block.
-    const sig = JSON.stringify(embeds.map((e) => [e.data.color, e.data.fields]));
-    if (sig === lastSystemSig) return;
-    const message = await resolveMessage(
-      client,
-      'system',
-      location.channelId,
-      location.systemMessageId,
-    );
-    await message.edit({ embeds });
-    lastSystemSig = sig;
-  } catch (err) {
-    if (isDeleted(err)) {
-      cache.system = null;
-      location.systemMessageId = null;
-      persistLocation();
-      console.warn('System message was deleted; run /dashboard setup again.');
-    } else {
-      // Transient panel/API hiccup: keep the loop alive, log quietly.
-      console.error('System update failed:', err.message ?? err);
-    }
-  }
-}
-
-// Chained timeout (not setInterval) so a slow fetch/edit never overlaps itself.
-function runSystemLoop(client) {
-  const tick = async () => {
-    await updateSystem(client);
-    setTimeout(tick, refreshMs);
-  };
-  tick();
-}
-
 export function startUpdater(client) {
   loadLocation();
   updateDashboard(client);
   setInterval(() => updateDashboard(client), DASHBOARD_INTERVAL_MS);
-  if (panelConfigured()) runSystemLoop(client);
 }

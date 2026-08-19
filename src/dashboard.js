@@ -195,7 +195,8 @@ export async function updateDashboard(client) {
     try {
       const players = await fetchPlayerList();
       embeds.push(buildPlayerListEmbed(players));
-    } catch {
+    } catch (err) {
+      console.error('Player list fetch failed:', err.message ?? err);
       embeds.push(buildPlayerListEmbed([]));
     }
     try {

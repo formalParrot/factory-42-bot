@@ -7,6 +7,7 @@ export async function fetchPlayerList() {
     password: process.env.SURV_RCON_PASS,
   });
   const res = await rcon.send('list');
+  console.log('RCON list response:', JSON.stringify(res));
   await rcon.end();
   const match = res.match(/online:\s*(.*)$/);
   if (!match || !match[1].trim()) return [];

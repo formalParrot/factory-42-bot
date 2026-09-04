@@ -1,6 +1,7 @@
 import config from './config.js';
 import { sessionExists, createSession, sendConsole, killSession } from './tmux.js';
 import { serviceState } from './state.js';
+import { notifyServiceChange } from './webhook.js';
 
 const STOP_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 2_000;
@@ -13,6 +14,7 @@ export async function startService(index) {
   serviceState.set(index, 'starting');
   try {
     await createSession(service.tmuxSession, service.cwd, service.startCommand);
+    await notifyServiceChange({ name: service.name, action: 'start' });
     return 'started';
   } finally {
     serviceState.delete(index);
@@ -29,9 +31,13 @@ export async function stopService(index) {
     await sendConsole(service.tmuxSession, service.stopConsoleCommand);
     for (let waited = 0; waited < STOP_TIMEOUT_MS; waited += POLL_INTERVAL_MS) {
       await sleep(POLL_INTERVAL_MS);
-      if (!(await sessionExists(service.tmuxSession))) return 'stopped';
+      if (!(await sessionExists(service.tmuxSession))) {
+        await notifyServiceChange({ name: service.name, action: 'stop' });
+        return 'stopped';
+      }
     }
     await killSession(service.tmuxSession);
+    await notifyServiceChange({ name: service.name, action: 'stop' });
     return 'killed';
   } finally {
     serviceState.delete(index);

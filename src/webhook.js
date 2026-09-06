@@ -7,7 +7,7 @@ const URL = process.env.START_STOP_WEBHOOK_URL;
 const TOKEN = process.env.START_STOP_WEBHOOK_TOKEN;
 const HEADER = process.env.START_STOP_WEBHOOK_HEADER || 'x-admin-key';
 
-const SERVICE_LABEL = 'Minecraft Server';
+const SERVICE_LABEL = 'Factory 42';
 
 export function webhookConfigured() {
   return Boolean(URL && TOKEN);

@@ -3,6 +3,8 @@ import { Client, Events, GatewayIntentBits, MessageFlags } from 'discord.js';
 import { registerCommands } from './commands.js';
 import { startUpdater } from './dashboard.js';
 import { handleInteraction } from './interactions.js';
+import { startTailing } from './consoleLog.js';
+import { startApiServer } from './api.js';
 
 if (!process.env.DISCORD_TOKEN) {
   console.error('DISCORD_TOKEN is not set. Copy .env.example to .env and fill it in.');
@@ -10,6 +12,9 @@ if (!process.env.DISCORD_TOKEN) {
 }
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+
+startTailing();
+startApiServer();
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);

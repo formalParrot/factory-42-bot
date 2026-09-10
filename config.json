@@ -11,6 +11,7 @@
       "name": "Velocity",
       "tmuxSession": "velocity",
       "cwd": "/root/velocity-proxy/",
+      "latestLog": "/root/velocity-proxy/logs/latest.log",
       "startCommand": "bash run.sh",
       "stopConsoleCommand": "shutdown",
       "ping": { "host": "127.0.0.1", "port": 25565 }
@@ -19,6 +20,7 @@
       "name": "Survival",
       "tmuxSession": "mcserver",
       "cwd": "/root/server",
+      "latestLog": "/root/server/logs/latest.log",
       "startCommand": "bash run.sh",
       "stopConsoleCommand": "stop",
       "ping": { "host": "127.0.0.1", "port": 25566 }
@@ -27,6 +29,7 @@
       "name": "Creative",
       "tmuxSession": "mcserver-creative",
       "cwd": "/root/creative",
+      "latestLog": "/root/creative/logs/latest.log",
       "startCommand": "bash run.sh",
       "stopConsoleCommand": "stop",
       "ping": { "host": "127.0.0.1", "port": 25567 }

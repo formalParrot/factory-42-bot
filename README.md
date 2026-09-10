@@ -62,6 +62,39 @@ The control message lives in the mod-only `controls` channel. Each service has i
 - Stop and Restart ask for confirmation, since they disconnect online players.
 - Uptime, CPU and RAM in the System embed are the whole container's, read live from the Proxmox panel API rather than per-service — so they stay correct across bot restarts and don't depend on `ps` parsing.
 
+## Console API
+
+The bot exposes an authenticated HTTP + WebSocket API (routes under `/f42`) that lets you read each service's console and send commands. It reads from each server's `logs/latest.log` (which Minecraft and Velocity write live), so you get the full console output including scrollback. Sending commands uses the same tmux path as the Discord controls.
+
+Configure it in `.env`:
+
+- `API_HOST` — bind address (default `127.0.0.1`)
+- `API_PORT` — port (default `8080`)
+- `API_TOKEN` — shared secret, required; sent on the `x-api-key` header (override with `API_HEADER`)
+- Each service in `config.json` optionally has `latestLog`, which defaults to `<cwd>/logs/latest.log`.
+
+### Endpoints
+
+All requests carry the token on the `x-api-key` header.
+
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/f42/health` | Liveness + uptime. |
+| `GET` | `/f42/services` | List services with running state, port and log path. |
+| `GET` | `/f42/services/:name` | Single-service status. |
+| `GET` | `/f42/services/:name/console?lines=200` | Last N lines of console output. |
+| `POST` | `/f42/services/:name/console` | Send a command, body `{ "command": "list" }`. |
+| `POST` | `/f42/services/:name/start` / `stop` / `restart` | Start/stop/restart (stop waits up to 60s). |
+| `GET` | `/f42/ws?service=:name&token=...` | WebSocket console: streams history then live lines; send `{ "command": "..." }` to run commands over the same socket. |
+
+`stop`/`restart` act like the Discord buttons (graceful stop, force-kill after 60s).
+
+Notes:
+
+- Typed commands are not written to `latest.log` by default (Velocity has `log-command-executions = false`); the API echoes sent commands back on the WebSocket so the console stays coherent.
+- `latest.log` is recreated on each server start; the bot detects the rotation and picks up the new file automatically.
+- There is no TLS in the API server. It binds to loopback by default; if you expose it beyond localhost, front it with a reverse proxy.
+
 ## Running the bot itself in the background
 
 Run the bot under its own tmux session or a process manager, e.g.:

@@ -60,6 +60,12 @@ function findService(name) {
   return config.services.findIndex((s) => s.name.toLowerCase() === needle);
 }
 
+function resolveServiceOr(res, name, callback) {
+  const index = findService(name);
+  if (index === -1) return json(res, 404, { error: `Service "${name}" not found.` });
+  return callback(index);
+}
+
 async function runningFor(index) {
   return sessionExists(config.services[index].tmuxSession);
 }

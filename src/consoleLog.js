@@ -9,6 +9,9 @@ import config from './config.js';
 const TAIL_INTERVAL_MS = 500;
 const MAX_LINES = 1500;
 const MAX_POLL_BYTES = 1_048_576;
+// How much of an existing log is scanned to reconstruct who is online when the
+// bot starts (or when the log rotates, i.e. the server restarts).
+const MAX_BACKFILL_BYTES = 1_048_576;
 
 const tailers = new Map();
 
@@ -35,6 +38,33 @@ export function onLine(index, cb) {
   return () => tailer.listeners.delete(cb);
 }
 
+// Registers a callback invoked when the log file is replaced or truncated
+// (latest.log is recreated on every server start). Returns an unsubscribe fn.
+export function onRotate(index, cb) {
+  const tailer = ensureTailer(index);
+  tailer.rotateListeners.add(cb);
+  return () => tailer.rotateListeners.delete(cb);
+}
+
+// Reads a slice of the tail of a service's current log. Used to reconstruct
+// state (e.g. who was online before a restart) that predates the ring buffer.
+export async function readLogTail(index, maxBytes = MAX_BACKFILL_BYTES) {
+  const path = latestLogPath(index);
+  const handle = await open(path, 'r');
+  try {
+    const stat = await handle.stat();
+    const chunk = Math.min(maxBytes, stat.size);
+    const buf = Buffer.alloc(chunk);
+    const { bytesRead } = await handle.read(buf, 0, chunk, stat.size - chunk);
+    const text = buf.subarray(0, bytesRead).toString('utf8');
+    const lines = text.split('\n');
+    if (stat.size > chunk) lines.shift();
+    return lines.map((line) => line.replace(/\r$/, '')).filter(Boolean);
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
 function ensureTailer(index) {
   let tailer = tailers.get(index);
   if (tailer) return tailer;
@@ -46,6 +76,7 @@ function ensureTailer(index) {
     pending: '',
     lines: [],
     listeners: new Set(),
+    rotateListeners: new Set(),
     timer: null,
     busy: false,
   };
@@ -53,6 +84,10 @@ function ensureTailer(index) {
   tailer.timer = setInterval(() => poll(tailer), TAIL_INTERVAL_MS);
   if (tailer.timer.unref) tailer.timer.unref();
   return tailer;
+}
+
+function notifyRotate(tailer) {
+  for (const cb of tailer.rotateListeners) cb();
 }
 
 async function poll(tailer) {
@@ -63,6 +98,7 @@ async function poll(tailer) {
     handle = await open(tailer.path, 'r');
     const stat = await handle.stat();
     if (stat.ino !== tailer.ino || stat.dev !== tailer.dev) {
+      if (tailer.ino !== null) notifyRotate(tailer);
       tailer.ino = stat.ino;
       tailer.dev = stat.dev;
       tailer.offset = 0;
@@ -70,6 +106,7 @@ async function poll(tailer) {
       tailer.lines = [];
     }
     if (stat.size < tailer.offset) {
+      notifyRotate(tailer);
       tailer.offset = 0;
       tailer.lines = [];
     }
@@ -100,6 +137,7 @@ async function poll(tailer) {
     // latest.log missing (server has never run or logs dir removed). Reset so a
     // later start is picked up cleanly.
     if (tailer.ino !== null) {
+      notifyRotate(tailer);
       tailer.ino = null;
       tailer.dev = null;
       tailer.offset = 0;

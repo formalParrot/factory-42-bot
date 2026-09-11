@@ -15,7 +15,6 @@ import { snapshotAll } from './services.js';
 import {
   buildControlEmbed,
   buildControlRows,
-  buildPlayerListEmbed,
   buildStatusEmbed,
   buildSystemEmbed,
   getLocation,
@@ -24,7 +23,6 @@ import {
 } from './dashboard.js';
 import { restartService, startService, stopService } from './actions.js';
 import { fetchSystemStats, panelConfigured } from './panel.js';
-import { fetchPlayerList } from './rcon.js';
 import { serviceState } from './state.js';
 
 const POST_COLOR = 0x5865f2;
@@ -64,12 +62,6 @@ async function handleCommand(interaction) {
         // Panel unreachable; show service status only.
       }
     }
-    try {
-      const players = await fetchPlayerList();
-      embeds.push(buildPlayerListEmbed(players));
-    } catch {
-      // RCON unreachable; omit player list.
-    }
     return interaction.editReply({ embeds });
   }
 
@@ -91,12 +83,6 @@ async function handleCommand(interaction) {
       } catch {
         embeds.push(new EmbedBuilder().setTitle('System').setDescription('Waiting for panel...'));
       }
-    }
-    try {
-      const players = await fetchPlayerList();
-      embeds.push(buildPlayerListEmbed(players));
-    } catch {
-      embeds.push(buildPlayerListEmbed([]));
     }
     const existing = getLocation();
     let dashboardMessage;

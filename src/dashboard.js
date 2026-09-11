@@ -9,7 +9,7 @@ import {
   panelConfigured,
   usageMetrics,
 } from './panel.js';
-import { fetchPlayerList } from './rcon.js';
+import { getOnlinePlayers } from './players.js';
 
 const COLOR_ONLINE = 0x57f287;
 const COLOR_OFFLINE = 0xed4245;
@@ -74,6 +74,23 @@ export async function setDashboardMessages(client, dashboardMessage, controlMess
   persistLocation();
 }
 
+// Names in the embed field are capped to a char budget so the value stays well
+// within Discord's 1024-char field limit after the Status/Players lines.
+function formatPlayerNames(names) {
+  const shown = [];
+  let length = 0;
+  for (const name of names) {
+    const addition = shown.length === 0 ? name.length : name.length + 2;
+    if (length + addition > 850) break;
+    shown.push(name);
+    length += addition;
+  }
+  const extra = names.length - shown.length;
+  let text = shown.join(', ');
+  if (extra > 0) text += ` +${extra} more`;
+  return text;
+}
+
 export function buildStatusEmbed(snapshots) {
   const embed = new EmbedBuilder().setTitle('Server Dashboard').setTimestamp(new Date());
   embed.addFields(
@@ -91,6 +108,10 @@ export function buildStatusEmbed(snapshots) {
             ? `Players: ${snap.ping.online}/${snap.ping.max}`
             : 'Players: n/a',
         );
+      }
+      if (snap.running) {
+        const online = getOnlinePlayers(i);
+        lines.push(`Online: ${online.length ? formatPlayerNames(online) : 'None'}`);
       }
       return { name: service.name, value: lines.join('\n'), inline: true };
     }),
@@ -158,15 +179,6 @@ export function buildControlRows(snapshots) {
   });
 }
 
-export function buildPlayerListEmbed(players) {
-  const embed = new EmbedBuilder()
-    .setTitle('Player List')
-    .setColor(COLOR_SYSTEM)
-    .setTimestamp(new Date());
-  embed.setDescription(players.length ? players.join('\n') : 'No players online.');
-  return embed;
-}
-
 // 10008 Unknown Message / 10003 Unknown Channel: the message was deleted.
 function isDeleted(err) {
   return err?.code === 10008 || err?.code === 10003;
@@ -191,13 +203,6 @@ export async function updateDashboard(client) {
       } catch {
         // Panel unreachable; omit system embed.
       }
-    }
-    try {
-      const players = await fetchPlayerList();
-      embeds.push(buildPlayerListEmbed(players));
-    } catch (err) {
-      console.error('Player list fetch failed:', err.message ?? err);
-      embeds.push(buildPlayerListEmbed([]));
     }
     try {
       const message = await resolveMessage(

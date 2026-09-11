@@ -4,6 +4,7 @@ import config from './config.js';
 import { sessionExists, sendConsole } from './tmux.js';
 import { startService, stopService, restartService } from './actions.js';
 import { getLastLines, latestLogPath, onLine } from './consoleLog.js';
+import { getOnlinePlayers } from './players.js';
 
 // Authenticated HTTP + WebSocket API exposing each service's console via its
 // logs/latest.log. All routes are under /f42. Sending commands reuses the same
@@ -92,6 +93,8 @@ async function handleRequest(req, res, pathname) {
         running: await runningFor(index),
         port: service.ping?.port ?? null,
         latestLog: latestLogPath(index),
+        playerCount: getOnlinePlayers(index).length,
+        players: getOnlinePlayers(index),
       })),
     );
     return json(res, 200, { services });
@@ -108,6 +111,8 @@ async function handleRequest(req, res, pathname) {
         running,
         port: config.services[index].ping?.port ?? null,
         latestLog: latestLogPath(index),
+        playerCount: getOnlinePlayers(index).length,
+        players: getOnlinePlayers(index),
       });
     });
   }

@@ -4,6 +4,7 @@ import { registerCommands } from './commands.js';
 import { startUpdater } from './dashboard.js';
 import { handleInteraction } from './interactions.js';
 import { startTailing } from './consoleLog.js';
+import { startPlayerTracking } from './players.js';
 import { startApiServer } from './api.js';
 
 if (!process.env.DISCORD_TOKEN) {
@@ -14,6 +15,7 @@ if (!process.env.DISCORD_TOKEN) {
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 startTailing();
+startPlayerTracking();
 startApiServer();
 
 client.once(Events.ClientReady, async (readyClient) => {

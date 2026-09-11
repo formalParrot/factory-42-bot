@@ -90,6 +90,68 @@ All requests carry the token on the `x-api-key` header.
 
 `stop`/`restart` act like the Discord buttons (graceful stop, force-kill after 60s).
 
+### Example responses
+
+`GET /f42/health`:
+
+```json
+{ "ok": true, "uptimeSeconds": 3817 }
+```
+
+`GET /f42/services`:
+
+```json
+{
+  "services": [
+    {
+      "name": "Survival",
+      "running": true,
+      "port": 25566,
+      "latestLog": "/root/server/logs/latest.log",
+      "playerCount": 3,
+      "players": ["Notch", "jeb_", "Herobrine"]
+    }
+  ]
+}
+```
+
+`GET /f42/services/Survival` returns the same single-service object (404 with
+`{ "error": "Service \"X\" not found." }` for an unknown name).
+
+`GET /f42/services/Survival/console?lines=200`:
+
+```json
+{
+  "name": "Survival",
+  "running": true,
+  "lines": ["[12:00:01 INFO]: Starting minecraft server version 1.21.1", "..." ]
+}
+```
+
+`POST /f42/services/Survival/console` with body `{ "command": "list" }`:
+
+```json
+{ "name": "Survival", "command": "list", "sent": true }
+```
+
+`POST /f42/services/Survival/start` (also `stop`/`restart`):
+
+```json
+{
+  "name": "Survival",
+  "action": "start",
+  "result": "started",
+  "running": true
+}
+```
+
+`GET /f42/ws?service=Survival&token=...` — the WebSocket sends JSON frames:
+`{ "type": "status", "name": "Survival", "running": true }`, then one
+`{ "type": "line", "text": "..." }` per console line (history then live). Send
+`{ "command": "list" }` to run a command; you get back
+`{ "type": "echo", "text": "list" }` on success or
+`{ "type": "error", "error": "..." }` on failure.
+
 Notes:
 
 - Typed commands are not written to `latest.log` by default (Velocity has `log-command-executions = false`); the API echoes sent commands back on the WebSocket so the console stays coherent.

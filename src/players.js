@@ -123,6 +123,7 @@ function trackService(index) {
 
   readLogTail(index)
     .then((lines) => {
+      set.clear();
       for (const line of lines) apply(parsePlayerLine(line), set);
     })
     .catch(() => {});

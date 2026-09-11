@@ -10,8 +10,10 @@ const TAIL_INTERVAL_MS = 500;
 const MAX_LINES = 1500;
 const MAX_POLL_BYTES = 1_048_576;
 // How much of an existing log is scanned to reconstruct who is online when the
-// bot starts (or when the log rotates, i.e. the server restarts).
-const MAX_BACKFILL_BYTES = 1_048_576;
+// bot starts (or when the log rotates, i.e. the server restarts). Cap is high
+// enough to cover a full day of an active server so players who joined long
+// before the bot started are still reconstructed.
+const MAX_BACKFILL_BYTES = 64 * 1024 * 1024;
 
 const tailers = new Map();
 

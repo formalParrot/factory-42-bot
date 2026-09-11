@@ -61,6 +61,7 @@ The control message lives in the mod-only `controls` channel. Each service has i
 - Stop is graceful: the bot types the stop command into the server console and waits up to 60 seconds before force-killing the session.
 - Stop and Restart ask for confirmation, since they disconnect online players.
 - Uptime, CPU and RAM in the System embed are the whole container's, read live from the Proxmox panel API rather than per-service — so they stay correct across bot restarts and don't depend on `ps` parsing.
+- Online player names/counts are tracked by parsing each server's `logs/latest.log` and persisted to `data/players.json` (gitignored), so they survive bot restarts and are re-seeded before the log backfill catches up.
 
 ## Console API
 

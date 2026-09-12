@@ -72,11 +72,15 @@ Configure it in `.env`:
 - `API_HOST` — bind address (default `127.0.0.1`)
 - `API_PORT` — port (default `8080`)
 - `API_TOKEN` — shared secret, required; sent on the `x-api-key` header (override with `API_HEADER`)
+- `WEBHOOK_TOKEN` — optional read-only token, sent on the `x-webhook-token` header (override with `WEBHOOK_HEADER`). It can only `GET` `/f42/services/:name` (single-service status); it cannot list services, read the console, send commands, start/stop/restart, or open a WebSocket. Useful for external integrations that just need to check one service.
 - Each service in `config.json` optionally has `latestLog`, which defaults to `<cwd>/logs/latest.log`.
 
 ### Endpoints
 
 All requests carry the token on the `x-api-key` header.
+
+`WEBHOOK_TOKEN` (if set) is sent on the `x-webhook-token` header and unlocks only
+`GET /f42/services/:name`; every other route needs `API_TOKEN`.
 
 | Method | Route | Description |
 |---|---|---|

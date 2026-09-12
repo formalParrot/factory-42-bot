@@ -14,6 +14,8 @@ const HOST = process.env.API_HOST || '127.0.0.1';
 const PORT = Number(process.env.API_PORT || 8080);
 const TOKEN = process.env.API_TOKEN;
 const AUTH_HEADER = (process.env.API_HEADER || 'x-api-key').toLowerCase();
+const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN;
+const WEBHOOK_HEADER = (process.env.WEBHOOK_HEADER || 'x-webhook-token').toLowerCase();
 const WS_HISTORY_LINES = 500;
 const MAX_BODY = 64 * 1024;
 
@@ -50,6 +52,10 @@ function authorized(req) {
   return Boolean(TOKEN) && req.headers[AUTH_HEADER] === TOKEN;
 }
 
+function authorizedByWebhook(req) {
+  return Boolean(WEBHOOK_TOKEN) && req.headers[WEBHOOK_HEADER] === WEBHOOK_TOKEN;
+}
+
 function authorizedByToken(req) {
   if (!TOKEN) return false;
   const url = new URL(req.url, 'http://localhost');
@@ -76,9 +82,18 @@ async function handleRequest(req, res, pathname) {
   const method = req.method;
 
   if (parts[0] !== 'f42') return json(res, 404, { error: 'Not found.' });
-  if (!authorized(req)) return json(res, 401, { error: 'Unauthorized.' });
+
+  const fullAuth = authorized(req);
+  const webhookAuth = authorizedByWebhook(req);
+  if (!fullAuth && !webhookAuth) return json(res, 401, { error: 'Unauthorized.' });
 
   const [resource, name, action] = parts.slice(1);
+
+  // Webhook tokens are limited to reading a single service's status, nothing else.
+  if (webhookAuth && !fullAuth) {
+    const allowed = resource === 'services' && name && !action && method === 'GET';
+    if (!allowed) return json(res, 403, { error: 'Forbidden.' });
+  }
 
   if (resource === 'health') {
     if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });

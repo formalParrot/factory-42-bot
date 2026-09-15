@@ -5,6 +5,7 @@ import { sessionExists, sendConsole } from './tmux.js';
 import { startService, stopService, restartService } from './actions.js';
 import { getLastLines, latestLogPath, onLine } from './consoleLog.js';
 import { getOnlinePlayers } from './players.js';
+import { listFiles, uploadFiles, deleteFile, disableFile, enableFile } from './files.js';
 
 // Authenticated HTTP + WebSocket API exposing each service's console via its
 // logs/latest.log. All routes are under /f42. Sending commands reuses the same
@@ -161,6 +162,51 @@ async function handleRequest(req, res, pathname) {
         action === 'start' ? await startService(index) : action === 'stop' ? await stopService(index) : await restartService(index);
       const running = await runningFor(index);
       return json(res, 200, { name: config.services[index].name, action, result, running });
+    });
+  }
+
+  // ── File management ────────────────────────────────────────────────────
+  if (resource === 'services' && name && parts[3] === 'files') {
+    return resolveServiceOr(res, name, async (index) => {
+      const modsDir = `${config.services[index].cwd}/mods`;
+      const fileAction = parts[4]; // undefined | 'upload' | <filename>
+      const subAction = parts[5];  // undefined | 'disable' | 'enable'
+
+      // GET /f42/services/<name>/files — list
+      if (!fileAction && method === 'GET') {
+        const files = await listFiles(modsDir);
+        return json(res, 200, { name: config.services[index].name, files });
+      }
+
+      // POST /f42/services/<name>/files/upload — upload
+      if (fileAction === 'upload' && !subAction && method === 'POST') {
+        const result = await uploadFiles(req, modsDir);
+        if (result.error) return json(res, 400, { error: result.error });
+        return json(res, 201, { name: config.services[index].name, ...result });
+      }
+
+      // DELETE /f42/services/<name>/files/<filename> — delete
+      if (fileAction && !subAction && method === 'DELETE') {
+        const result = await deleteFile(modsDir, fileAction);
+        if (result.error) return json(res, result.error.includes('not found') ? 404 : 400, result);
+        return json(res, 200, { name: config.services[index].name, ...result });
+      }
+
+      // POST /f42/services/<name>/files/<filename>/disable — disable
+      if (fileAction && subAction === 'disable' && method === 'POST') {
+        const result = await disableFile(modsDir, fileAction);
+        if (result.error) return json(res, result.error.includes('not found') ? 404 : 400, result);
+        return json(res, 200, { name: config.services[index].name, ...result });
+      }
+
+      // POST /f42/services/<name>/files/<filename>/enable — enable
+      if (fileAction && subAction === 'enable' && method === 'POST') {
+        const result = await enableFile(modsDir, fileAction);
+        if (result.error) return json(res, result.error.includes('not found') ? 404 : 400, result);
+        return json(res, 200, { name: config.services[index].name, ...result });
+      }
+
+      return json(res, 405, { error: 'Method not allowed.' });
     });
   }
 

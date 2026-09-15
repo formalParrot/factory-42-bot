@@ -90,6 +90,11 @@ All requests carry the token on the `x-api-key` header.
 | `GET` | `/f42/services/:name/console?lines=200` | Last N lines of console output. |
 | `POST` | `/f42/services/:name/console` | Send a command, body `{ "command": "list" }`. |
 | `POST` | `/f42/services/:name/start` / `stop` / `restart` | Start/stop/restart (stop waits up to 60s). |
+| `GET` | `/f42/services/:name/files` | List files in the service's `<cwd>/mods` directory. |
+| `POST` | `/f42/services/:name/files/upload` | Upload mod(s) to the mods directory (multipart, max 250 MB). |
+| `DELETE` | `/f42/services/:name/files/:file` | Delete a mod. |
+| `POST` | `/f42/services/:name/files/:file/disable` | Disable a `.jar` (renames it to `:file.dis`). |
+| `POST` | `/f42/services/:name/files/:file/enable` | Enable a `.jar.dis` (renames it back to `:file`). |
 | `GET` | `/f42/ws?service=:name&token=...` | WebSocket console: streams history then live lines; send `{ "command": "..." }` to run commands over the same socket. |
 
 `stop`/`restart` act like the Discord buttons (graceful stop, force-kill after 60s).
@@ -161,6 +166,62 @@ Notes:
 - Typed commands are not written to `latest.log` by default (Velocity has `log-command-executions = false`); the API echoes sent commands back on the WebSocket so the console stays coherent.
 - `latest.log` is recreated on each server start; the bot detects the rotation and picks up the new file automatically.
 - There is no TLS in the API server. It binds to loopback by default; if you expose it beyond localhost, front it with a reverse proxy.
+
+### File management (mods)
+
+Files live in each service's `<cwd>/mods` directory (e.g. Survival with `cwd: "/root/server"` uses `/root/server/mods`). The mods directory is created on first upload.
+
+Upload mods via `multipart/form-data` (each `-F "file=@..."` is stored under its original filename; multiple files per request are supported, up to 250 MB total):
+
+```sh
+curl -X POST -H "x-api-key: $API_TOKEN" \
+  -F "file=@/local/path/MyMod.jar" \
+  http://127.0.0.1:8080/f42/services/Survival/files/upload
+```
+
+Response: `201 { "name": "Survival", "uploaded": ["MyMod.jar"] }`
+
+List files:
+
+```sh
+curl -H "x-api-key: $API_TOKEN" \
+  http://127.0.0.1:8080/f42/services/Survival/files
+```
+
+Response:
+
+```json
+{
+  "name": "Survival",
+  "files": [
+    { "name": "MyMod.jar", "size": 482031, "modified": "2026-09-15T10:30:00.000Z", "enabled": true },
+    { "name": "OldMod.jar.dis", "size": 12984, "modified": "2026-09-01T08:12:00.000Z", "enabled": false }
+  ]
+}
+```
+
+Disable a mod (renames `MyMod.jar` → `MyMod.jar.dis` so the server skips it; only works on `.jar` files):
+
+```sh
+curl -X POST -H "x-api-key: $API_TOKEN" \
+  http://127.0.0.1:8080/f42/services/Survival/files/MyMod.jar/disable
+```
+
+Enable it again (`MyMod.jar.dis` → `MyMod.jar`):
+
+```sh
+curl -X POST -H "x-api-key: $API_TOKEN" \
+  http://127.0.0.1:8080/f42/services/Survival/files/MyMod.jar.dis/enable
+```
+
+Delete a mod (pass the filename URL-encoded):
+
+```sh
+curl -X DELETE -H "x-api-key: $API_TOKEN" \
+  http://127.0.0.1:8080/f42/services/Survival/files/MyMod.jar
+```
+
+Filenames are validated against path traversal; uploading into subdirectories is not allowed. Disabled files keep a `name` ending in `.dis` and report `"enabled": false` in the listing.
 
 ## Running the bot itself in the background
 

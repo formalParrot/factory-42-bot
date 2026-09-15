@@ -1,4 +1,7 @@
 import http from 'node:http';
+import { exec, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import config from './config.js';
 import { sessionExists, sendConsole } from './tmux.js';
@@ -19,6 +22,8 @@ const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN;
 const WEBHOOK_HEADER = (process.env.WEBHOOK_HEADER || 'x-webhook-token').toLowerCase();
 const WS_HISTORY_LINES = 500;
 const MAX_BODY = 64 * 1024;
+const REPO_DIR = fileURLToPath(new URL('../', import.meta.url));
+const execAsync = promisify(exec);
 
 const startedAt = Date.now();
 
@@ -99,6 +104,19 @@ async function handleRequest(req, res, pathname) {
   if (resource === 'health') {
     if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
     return json(res, 200, { ok: true, uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000) });
+  }
+
+  if (resource === 'refresh' && method === 'POST') {
+    try {
+      const { stdout, stderr } = await execAsync('git pull', { cwd: REPO_DIR });
+      // Respond first, then restart via pm2 (detached so it survives this process dying).
+      res.once('finish', () => {
+        spawn('pm2', ['restart', '0'], { detached: true, stdio: 'ignore' }).unref();
+      });
+      return json(res, 200, { ok: true, restarting: true, gitPull: [stdout, stderr].filter(Boolean).join('') });
+    } catch (err) {
+      return json(res, 502, { ok: false, error: `git pull failed: ${err.stderr?.trim?.() || err.message}` });
+    }
   }
 
   if (resource === 'services' && parts.length === 2) {

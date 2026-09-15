@@ -85,6 +85,7 @@ All requests carry the token on the `x-api-key` header.
 | Method | Route | Description |
 |---|---|---|
 | `GET` | `/f42/health` | Liveness + uptime. |
+| `POST` | `/f42/refresh` | Run `git pull` in the repo, then `pm2 restart 0` to redeploy the bot. |
 | `GET` | `/f42/services` | List services with running state, port and log path. |
 | `GET` | `/f42/services/:name` | Single-service status. |
 | `GET` | `/f42/services/:name/console?lines=200` | Last N lines of console output. |
@@ -98,6 +99,10 @@ All requests carry the token on the `x-api-key` header.
 | `GET` | `/f42/ws?service=:name&token=...` | WebSocket console: streams history then live lines; send `{ "command": "..." }` to run commands over the same socket. |
 
 `stop`/`restart` act like the Discord buttons (graceful stop, force-kill after 60s).
+
+`POST /f42/refresh` runs in the bot's own repo directory: it executes `git pull`, then
+triggers `pm2 restart 0`. The response is sent before the restart so the request isn't
+cut off; the pm2 process is detached from the bot so it survives the bot exiting.
 
 ### Example responses
 

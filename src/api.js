@@ -108,7 +108,7 @@ async function handleRequest(req, res, pathname) {
 
   if (resource === 'refresh' && method === 'POST') {
     try {
-      const { stdout, stderr } = await execAsync('git pull', { cwd: REPO_DIR });
+      const { stdout, stderr } = await execAsync('git stash && git pull', { cwd: REPO_DIR });
       // Respond first, then restart via pm2 (detached so it survives this process dying).
       res.once('finish', () => {
         spawn('pm2', ['restart', '0'], { detached: true, stdio: 'ignore' }).unref();

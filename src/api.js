@@ -1,7 +1,9 @@
 import http from 'node:http';
 import { exec, spawn } from 'node:child_process';
-import { copyFile, readFile, writeFile } from 'node:fs/promises';
+import { unlink, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import config from './config.js';
@@ -27,6 +29,31 @@ const MAX_BODY = 64 * 1024;
 const KEY_RE = /^[^=:#!\s\\]+$/;
 const REPO_DIR = fileURLToPath(new URL('../', import.meta.url));
 const execAsync = promisify(exec);
+
+// server.properties lives in a root-owned directory, so plain fs calls fail
+// with EPERM. Read via `sudo cat` and write via a temp file that is `sudo cp`'d
+// over the real one (preserving the target's ownership/permissions), then
+// removed.
+
+const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+
+async function catAsRoot(path) {
+  return (await execAsync(`sudo cat ${shq(path)}`)).stdout;
+}
+
+async function cpAsRoot(src, dest) {
+  await execAsync(`sudo cp ${shq(src)} ${shq(dest)}`);
+}
+
+async function writePropertiesAsRoot(path, content) {
+  const tmp = join(tmpdir(), `server.properties.${process.pid}.${Date.now()}.tmp`);
+  await writeFile(tmp, content);
+  try {
+    await cpAsRoot(tmp, path);
+  } finally {
+    await unlink(tmp).catch(() => {});
+  }
+}
 
 const startedAt = Date.now();
 
@@ -239,9 +266,9 @@ async function handleRequest(req, res, pathname) {
       if (method === 'GET') {
         let text;
         try {
-          text = await readFile(path, 'utf8');
+          text = await catAsRoot(path);
         } catch (err) {
-          if (err.code === 'ENOENT') {
+          if (/No such file or directory/.test(err.stderr || err.message)) {
             return json(res, 404, { error: `server.properties not found for service "${config.services[index].name}".` });
           }
           throw err;
@@ -258,10 +285,9 @@ async function handleRequest(req, res, pathname) {
       if (method === 'POST') {
         let exists;
         try {
-          await readFile(path, 'utf8');
+          await catAsRoot(path);
           exists = true;
-        } catch (err) {
-          if (err.code !== 'ENOENT') throw err;
+        } catch {
           exists = false;
         }
         if (!exists) {
@@ -279,15 +305,15 @@ async function handleRequest(req, res, pathname) {
           return json(res, 400, { error: `Invalid property name(s): ${invalid.join(', ')}.` });
         }
 
-        const text = await readFile(path, 'utf8');
+        const text = await catAsRoot(path);
         const entries = parseProperties(text);
         const applied = {};
         for (const [key, value] of Object.entries(updates)) {
           setEntry(entries, key, String(value));
           applied[key] = String(value);
         }
-        await copyFile(path, `${path}.bak`);
-        await writeFile(path, serializeProperties(entries));
+        await cpAsRoot(path, `${path}.bak`);
+        await writePropertiesAsRoot(path, serializeProperties(entries));
 
         return json(res, 200, {
           name: config.services[index].name,

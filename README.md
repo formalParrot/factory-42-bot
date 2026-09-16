@@ -178,21 +178,23 @@ Notes:
 
 Files live in each service's `<cwd>/mods` directory (e.g. Survival with `cwd: "/root/server"` uses `/root/server/mods`). The mods directory is created on first upload.
 
-Upload mods via `multipart/form-data` (each `-F "file=@..."` is stored under its original filename; multiple files per request are supported, up to 250 MB total):
+Upload mods via `multipart/form-data` (each `file` field is stored under its original filename; multiple files per request are supported, up to 250 MB total):
 
-```sh
-curl -X POST -H "x-api-key: $API_TOKEN" \
-  -F "file=@/local/path/MyMod.jar" \
-  http://127.0.0.1:8080/f42/services/Survival/files/upload
+```
+POST /f42/services/Survival/files/upload
+x-api-key: $API_TOKEN
+Content-Type: multipart/form-data
+
+file=@/local/path/MyMod.jar
 ```
 
 Response: `201 { "name": "Survival", "uploaded": ["MyMod.jar"] }`
 
 List files:
 
-```sh
-curl -H "x-api-key: $API_TOKEN" \
-  http://127.0.0.1:8080/f42/services/Survival/files
+```
+GET /f42/services/Survival/files
+x-api-key: $API_TOKEN
 ```
 
 Response:
@@ -209,23 +211,23 @@ Response:
 
 Disable a mod (renames `MyMod.jar` → `MyMod.jar.dis` so the server skips it; only works on `.jar` files):
 
-```sh
-curl -X POST -H "x-api-key: $API_TOKEN" \
-  http://127.0.0.1:8080/f42/services/Survival/files/MyMod.jar/disable
+```
+POST /f42/services/Survival/files/MyMod.jar/disable
+x-api-key: $API_TOKEN
 ```
 
 Enable it again (`MyMod.jar.dis` → `MyMod.jar`):
 
-```sh
-curl -X POST -H "x-api-key: $API_TOKEN" \
-  http://127.0.0.1:8080/f42/services/Survival/files/MyMod.jar.dis/enable
+```
+POST /f42/services/Survival/files/MyMod.jar.dis/enable
+x-api-key: $API_TOKEN
 ```
 
 Delete a mod (pass the filename URL-encoded):
 
-```sh
-curl -X DELETE -H "x-api-key: $API_TOKEN" \
-  http://127.0.0.1:8080/f42/services/Survival/files/MyMod.jar
+```
+DELETE /f42/services/Survival/files/MyMod.jar
+x-api-key: $API_TOKEN
 ```
 
 Filenames are validated against path traversal; uploading into subdirectories is not allowed. Disabled files keep a `name` ending in `.dis` and report `"enabled": false` in the listing.
@@ -238,9 +240,9 @@ Returns 404 for services without a `server.properties` (e.g. Velocity, which use
 
 Read the current config:
 
-```sh
-curl -H "x-api-key: $API_TOKEN" \
-  http://127.0.0.1:8080/f42/services/Survival/server.properties
+```
+GET /f42/services/Survival/server.properties
+x-api-key: $API_TOKEN
 ```
 
 Response:
@@ -261,10 +263,17 @@ Response:
 
 Change one or more properties (only the listed keys are updated; the rest of the file is preserved):
 
-```sh
-curl -X POST -H "x-api-key: $API_TOKEN" -H "Content-Type: application/json" \
-  -d '{"properties":{"max-players":"50","gamemode":"creative"}}' \
-  http://127.0.0.1:8080/f42/services/Survival/server.properties
+```
+POST /f42/services/Survival/server.properties
+x-api-key: $API_TOKEN
+Content-Type: application/json
+
+{
+  "properties": {
+    "max-players": "50",
+    "gamemode": "creative"
+  }
+}
 ```
 
 Response:

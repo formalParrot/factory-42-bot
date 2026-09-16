@@ -45,11 +45,40 @@ async function cpAsRoot(src, dest) {
   await execAsync(`sudo cp ${shq(src)} ${shq(dest)}`);
 }
 
+async function hadImmutableFlag(path) {
+  try {
+    const { stdout } = await execAsync(`sudo lsattr ${shq(path)}`);
+    return (stdout.trim().split(/\s+/)[0] || '').includes('i');
+  } catch {
+    return false;
+  }
+}
+
+async function cpOverAsRoot(src, dest) {
+  try {
+    await cpAsRoot(src, dest);
+    return;
+  } catch (err) {
+    if (!err || !/Operation not permitted/i.test(err.stderr || err.message)) throw err;
+  }
+  // Root still getting EPERM on an existing file means it is immutable
+  // (chattr +i). Clear the flag, copy, then restore it.
+  const wasImmutable = await hadImmutableFlag(dest);
+  await execAsync(`sudo chattr -i ${shq(dest)}`).catch(() => {});
+  try {
+    await cpAsRoot(src, dest);
+  } finally {
+    if (wasImmutable) {
+      await execAsync(`sudo chattr +i ${shq(dest)}`).catch(() => {});
+    }
+  }
+}
+
 async function writePropertiesAsRoot(path, content) {
   const tmp = join(tmpdir(), `server.properties.${process.pid}.${Date.now()}.tmp`);
   await writeFile(tmp, content);
   try {
-    await cpAsRoot(tmp, path);
+    await cpOverAsRoot(tmp, path);
   } finally {
     await unlink(tmp).catch(() => {});
   }

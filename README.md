@@ -96,6 +96,8 @@ All requests carry the token on the `x-api-key` header.
 | `DELETE` | `/f42/services/:name/files/:file` | Delete a mod. |
 | `POST` | `/f42/services/:name/files/:file/disable` | Disable a `.jar` (renames it to `:file.dis`). |
 | `POST` | `/f42/services/:name/files/:file/enable` | Enable a `.jar.dis` (renames it back to `:file`). |
+| `GET` | `/f42/services/:name/server.properties` | Read the service's `server.properties` as a parsed key-value object. |
+| `POST` | `/f42/services/:name/server.properties` | Change individual properties (backs up to `server.properties.bak` first). |
 | `GET` | `/f42/ws?service=:name&token=...` | WebSocket console: streams history then live lines; send `{ "command": "..." }` to run commands over the same socket. |
 
 `stop`/`restart` act like the Discord buttons (graceful stop, force-kill after 60s).
@@ -227,6 +229,64 @@ curl -X DELETE -H "x-api-key: $API_TOKEN" \
 ```
 
 Filenames are validated against path traversal; uploading into subdirectories is not allowed. Disabled files keep a `name` ending in `.dis` and report `"enabled": false` in the listing.
+
+### server.properties
+
+Each Minecraft server's `server.properties` lives at its `cwd/server.properties`. Read it or update individual keys without touching comments, blank lines or the rest of the file. The old file is backed up to `server.properties.bak` before each write.
+
+Returns 404 for services without a `server.properties` (e.g. Velocity, which uses `velocity.toml`).
+
+Read the current config:
+
+```sh
+curl -H "x-api-key: $API_TOKEN" \
+  http://127.0.0.1:8080/f42/services/Survival/server.properties
+```
+
+Response:
+
+```json
+{
+  "name": "Survival",
+  "path": "/root/server/server.properties",
+  "exists": true,
+  "properties": {
+    "enable-jmx-monitoring": "false",
+    "gamemode": "survival",
+    "max-players": "20",
+    "view-distance": "12"
+  }
+}
+```
+
+Change one or more properties (only the listed keys are updated; the rest of the file is preserved):
+
+```sh
+curl -X POST -H "x-api-key: $API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"properties":{"max-players":"50","gamemode":"creative"}}' \
+  http://127.0.0.1:8080/f42/services/Survival/server.properties
+```
+
+Response:
+
+```json
+{
+  "name": "Survival",
+  "path": "/root/server/server.properties",
+  "exists": true,
+  "updated": { "max-players": "50", "gamemode": "creative" },
+  "properties": {
+    "enable-jmx-monitoring": "false",
+    "gamemode": "creative",
+    "max-players": "50",
+    "view-distance": "12"
+  }
+}
+```
+
+Property names containing `=`, `:`, whitespace, `#`, `!`, or `\` are rejected with a `400` error.
+
+Note: `server.properties` is read on server startup. Changes made via this endpoint take effect the next time the server is restarted.
 
 ## Running the bot itself in the background
 

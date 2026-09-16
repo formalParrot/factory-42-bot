@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { exec, spawn } from 'node:child_process';
+import { copyFile, readFile, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
@@ -9,6 +10,7 @@ import { startService, stopService, restartService } from './actions.js';
 import { getLastLines, latestLogPath, onLine } from './consoleLog.js';
 import { getOnlinePlayers } from './players.js';
 import { listFiles, uploadFiles, deleteFile, disableFile, enableFile } from './files.js';
+import { entriesToObject, parseProperties, serializeProperties, setEntry } from './properties.js';
 
 // Authenticated HTTP + WebSocket API exposing each service's console via its
 // logs/latest.log. All routes are under /f42. Sending commands reuses the same
@@ -22,6 +24,7 @@ const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN;
 const WEBHOOK_HEADER = (process.env.WEBHOOK_HEADER || 'x-webhook-token').toLowerCase();
 const WS_HISTORY_LINES = 500;
 const MAX_BODY = 64 * 1024;
+const KEY_RE = /^[^=:#!\s\\]+$/;
 const REPO_DIR = fileURLToPath(new URL('../', import.meta.url));
 const execAsync = promisify(exec);
 
@@ -222,6 +225,77 @@ async function handleRequest(req, res, pathname) {
         const result = await enableFile(modsDir, fileAction);
         if (result.error) return json(res, result.error.includes('not found') ? 404 : 400, result);
         return json(res, 200, { name: config.services[index].name, ...result });
+      }
+
+      return json(res, 405, { error: 'Method not allowed.' });
+    });
+  }
+
+  // ── server.properties ───────────────────────────────────────────────────
+  if (resource === 'services' && name && parts[3] === 'server.properties' && !parts[4]) {
+    return resolveServiceOr(res, name, async (index) => {
+      const path = `${config.services[index].cwd}/server.properties`;
+
+      if (method === 'GET') {
+        let text;
+        try {
+          text = await readFile(path, 'utf8');
+        } catch (err) {
+          if (err.code === 'ENOENT') {
+            return json(res, 404, { error: `server.properties not found for service "${config.services[index].name}".` });
+          }
+          throw err;
+        }
+        const entries = parseProperties(text);
+        return json(res, 200, {
+          name: config.services[index].name,
+          path,
+          exists: true,
+          properties: entriesToObject(entries),
+        });
+      }
+
+      if (method === 'POST') {
+        let exists;
+        try {
+          await readFile(path, 'utf8');
+          exists = true;
+        } catch (err) {
+          if (err.code !== 'ENOENT') throw err;
+          exists = false;
+        }
+        if (!exists) {
+          return json(res, 404, { error: `server.properties not found for service "${config.services[index].name}".` });
+        }
+
+        const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+        const updates = body.properties;
+        if (!updates || typeof updates !== 'object' || Array.isArray(updates) || Object.keys(updates).length === 0) {
+          return json(res, 400, { error: 'Body must contain a non-empty "properties" object, e.g. {"properties":{"max-players":"20"}}.' });
+        }
+
+        const invalid = Object.keys(updates).filter((key) => !KEY_RE.test(key));
+        if (invalid.length > 0) {
+          return json(res, 400, { error: `Invalid property name(s): ${invalid.join(', ')}.` });
+        }
+
+        const text = await readFile(path, 'utf8');
+        const entries = parseProperties(text);
+        const applied = {};
+        for (const [key, value] of Object.entries(updates)) {
+          setEntry(entries, key, String(value));
+          applied[key] = String(value);
+        }
+        await copyFile(path, `${path}.bak`);
+        await writeFile(path, serializeProperties(entries));
+
+        return json(res, 200, {
+          name: config.services[index].name,
+          path,
+          exists: true,
+          updated: applied,
+          properties: entriesToObject(entries),
+        });
       }
 
       return json(res, 405, { error: 'Method not allowed.' });

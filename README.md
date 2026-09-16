@@ -25,8 +25,9 @@ Discord bot that manages a Velocity proxy and a Minecraft server running in tmux
      - `tmuxSession` — tmux session name the bot creates/controls.
      - `cwd` — working directory containing the server jar.
      - `startCommand` — command that runs the server in the foreground.
-     - `stopConsoleCommand` — console command for a graceful shutdown (`stop` for Paper/Vanilla, `shutdown` for Velocity).
-     - `ping` (optional) — `host`/`port` to query for player count and version.
+- `stopConsoleCommand` — console command for a graceful shutdown (`stop` for Paper/Vanilla, `shutdown` for Velocity).
+      - `core` (optional) — enables the core-update endpoints. Only `{ "type": "neoforge" }` is supported. The server's Minecraft version is auto-detected from the installed NeoForge version, or you can force it with `"mcVersion"` (e.g. `"1.21.1"`).
+      - `ping` (optional) — `host`/`port` to query for player count and version.
 5. Install and run:
 
    ```sh
@@ -98,6 +99,8 @@ All requests carry the token on the `x-api-key` header.
 | `POST` | `/f42/services/:name/files/:file/enable` | Enable a `.jar.dis` (renames it back to `:file`). |
 | `GET` | `/f42/services/:name/server.properties` | Read the service's `server.properties` as a parsed key-value object. |
 | `POST` | `/f42/services/:name/server.properties` | Change individual properties (backs up to `server.properties.bak` first). |
+| `GET` | `/f42/services/:name/core` | List the installed core and the NeoForge versions available to install. |
+| `POST` | `/f42/services/:name/core` | Update the server core (body `{ "version": "..." }`); stops, installs and restarts the server. |
 | `GET` | `/f42/ws?service=:name&token=...` | WebSocket console: streams history then live lines; send `{ "command": "..." }` to run commands over the same socket. |
 
 `stop`/`restart` act like the Discord buttons (graceful stop, force-kill after 60s).
@@ -296,6 +299,71 @@ Response:
 Property names containing `=`, `:`, whitespace, `#`, `!`, or `\` are rejected with a `400` error.
 
 Note: `server.properties` is read on server startup. Changes made via this endpoint take effect the next time the server is restarted.
+
+### Server cores
+
+For services with a `core` field in `config.json`, the bot can update the server software ("core") — currently NeoForge. It installs the NeoForge **installer** for the chosen version and runs `java -jar ... --installServer` in the service's `cwd`, which regenerates `run.sh`, `user_jvm_args.txt` and `libraries/net/neoforged/neoforge/<version>/`, so the existing `startCommand: "bash run.sh"` picks up the new version automatically. Mods in `mods/` are untouched.
+
+List the installed core and pick a version (`options` shows the newest build per Minecraft version; if the MC version is known, `versions` is the full list for that MC line, newest first):
+
+```
+GET /f42/services/Survival/core
+x-api-key: $API_TOKEN
+```
+
+```json
+{
+  "name": "Survival",
+  "type": "neoforge",
+  "installed": "21.1.153",
+  "mcVersion": "1.21.1",
+  "latest": "21.1.159",
+  "versions": ["21.1.159", "21.1.153", "..."],
+  "busy": false,
+  "lastUpdate": null
+}
+```
+
+Install a version. The server is gracefully stopped, the installer is downloaded and run, then the server is brought back up (only if it was running before); `busy` stays `true` on `GET /core` while this runs:
+
+```
+POST /f42/services/Survival/core
+x-api-key: $API_TOKEN
+Content-Type: application/json
+
+{ "version": "21.1.159" }
+```
+
+Response (immediate ack — poll `GET /core` to follow progress):
+
+```json
+{ "name": "Survival", "version": "21.1.159", "started": true, "note": "Core update started. Poll GET /f42/services/<name>/core to track it." }
+```
+
+When finished, `GET /core` reports the result in `lastUpdate`:
+
+```json
+{
+  "installed": "21.1.159",
+  "busy": false,
+  "lastUpdate": {
+    "version": "21.1.159",
+    "startedAt": "2026-09-16T10:00:00.000Z",
+    "finishedAt": "2026-09-16T10:03:12.000Z",
+    "ok": true,
+    "restarted": "restarted",
+    "error": null,
+    "output": "...installer output tail..."
+  }
+}
+```
+
+Notes:
+
+- Only the `API_TOKEN` can use these endpoints; read-only `WEBHOOK_TOKEN` clients get `403`.
+- The MC version is derived from the installed NeoForge build (e.g. `21.1.x` → Minecraft `1.21.1`); override it with `core.mcVersion` in `config.json`.
+- Downgrades and cross-MC switches work the same way — the previous install in `libraries/net/neoforged/neoforge` is removed first, as the official install script does.
+- The download uses `curl` and the installer runs under `sudo`, so the machine needs `curl`, `java`, and passwordless `sudo` for the bot user.
 
 ## Running the bot itself in the background
 

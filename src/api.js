@@ -1,18 +1,17 @@
 import http from 'node:http';
 import { exec, spawn } from 'node:child_process';
-import { unlink, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import config from './config.js';
+import { catAsRoot, cpAsRoot, writePropertiesAsRoot } from './root.js';
 import { sessionExists, sendConsole } from './tmux.js';
 import { startService, stopService, restartService } from './actions.js';
 import { getLastLines, latestLogPath, onLine } from './consoleLog.js';
 import { getOnlinePlayers } from './players.js';
 import { listFiles, uploadFiles, deleteFile, disableFile, enableFile } from './files.js';
 import { entriesToObject, parseProperties, serializeProperties, setEntry } from './properties.js';
+import { coreBusy, coreConfigured, getCoreStatus, listAllVersions, updateCore } from './cores.js';
 
 // Authenticated HTTP + WebSocket API exposing each service's console via its
 // logs/latest.log. All routes are under /f42. Sending commands reuses the same
@@ -29,60 +28,6 @@ const MAX_BODY = 64 * 1024;
 const KEY_RE = /^[^=:#!\s\\]+$/;
 const REPO_DIR = fileURLToPath(new URL('../', import.meta.url));
 const execAsync = promisify(exec);
-
-// server.properties lives in a root-owned directory, so plain fs calls fail
-// with EPERM. Read via `sudo cat` and write via a temp file that is `sudo cp`'d
-// over the real one (preserving the target's ownership/permissions), then
-// removed.
-
-const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
-
-async function catAsRoot(path) {
-  return (await execAsync(`sudo cat ${shq(path)}`)).stdout;
-}
-
-async function cpAsRoot(src, dest) {
-  await execAsync(`sudo cp ${shq(src)} ${shq(dest)}`);
-}
-
-async function hadImmutableFlag(path) {
-  try {
-    const { stdout } = await execAsync(`sudo lsattr ${shq(path)}`);
-    return (stdout.trim().split(/\s+/)[0] || '').includes('i');
-  } catch {
-    return false;
-  }
-}
-
-async function cpOverAsRoot(src, dest) {
-  try {
-    await cpAsRoot(src, dest);
-    return;
-  } catch (err) {
-    if (!err || !/Operation not permitted/i.test(err.stderr || err.message)) throw err;
-  }
-  // Root still getting EPERM on an existing file means it is immutable
-  // (chattr +i). Clear the flag, copy, then restore it.
-  const wasImmutable = await hadImmutableFlag(dest);
-  await execAsync(`sudo chattr -i ${shq(dest)}`).catch(() => {});
-  try {
-    await cpAsRoot(src, dest);
-  } finally {
-    if (wasImmutable) {
-      await execAsync(`sudo chattr +i ${shq(dest)}`).catch(() => {});
-    }
-  }
-}
-
-async function writePropertiesAsRoot(path, content) {
-  const tmp = join(tmpdir(), `server.properties.${process.pid}.${Date.now()}.tmp`);
-  await writeFile(tmp, content);
-  try {
-    await cpOverAsRoot(tmp, path);
-  } finally {
-    await unlink(tmp).catch(() => {});
-  }
-}
 
 const startedAt = Date.now();
 
@@ -353,6 +298,52 @@ async function handleRequest(req, res, pathname) {
         });
       }
 
+      return json(res, 405, { error: 'Method not allowed.' });
+    });
+  }
+
+  // ── Server cores (NeoForge) ─────────────────────────────────────────────
+  if (resource === 'services' && name && parts[3] === 'core' && !parts[4]) {
+    return resolveServiceOr(res, name, async (index) => {
+      if (!coreConfigured(index)) {
+        return json(res, 404, {
+          error: `No core configured for service "${config.services[index].name}". Add e.g. "core": {"type":"neoforge"} to config.json.`,
+        });
+      }
+      if (method === 'GET') {
+        return json(res, 200, await getCoreStatus(index));
+      }
+      if (method === 'POST') {
+        const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+        const version = typeof body.version === 'string' ? body.version.trim() : '';
+        if (!version) {
+          return json(res, 400, { error: 'Missing "version" string in body, e.g. {"version":"21.1.153"}.' });
+        }
+        if (coreBusy(index)) {
+          return json(res, 409, { error: `A core update for "${config.services[index].name}" is already in progress.` });
+        }
+        try {
+          const all = await listAllVersions();
+          if (!all.includes(version)) {
+            return json(res, 400, {
+              error: `Unknown NeoForge version "${version}". List available versions with GET /f42/services/${config.services[index].name}/core.`,
+            });
+          }
+        } catch (err) {
+          return json(res, 502, { error: `Could not fetch NeoForge versions: ${err.message}` });
+        }
+        // The install can take minutes (stop + download + installer + start), so
+        // ack immediately and let the caller poll GET /core for progress.
+        updateCore(index, version).catch((err) => {
+          console.error(`Core update for ${config.services[index].name} failed:`, err);
+        });
+        return json(res, 200, {
+          name: config.services[index].name,
+          version,
+          started: true,
+          note: 'Core update started. Poll GET /f42/services/<name>/core to track it.',
+        });
+      }
       return json(res, 405, { error: 'Method not allowed.' });
     });
   }

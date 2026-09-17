@@ -97,6 +97,9 @@ All requests carry the token on the `x-api-key` header.
 | `DELETE` | `/f42/services/:name/files/:file` | Delete a mod. |
 | `POST` | `/f42/services/:name/files/:file/disable` | Disable a `.jar` (renames it to `:file.dis`). |
 | `POST` | `/f42/services/:name/files/:file/enable` | Enable a `.jar.dis` (renames it back to `:file`). |
+| `GET` | `/f42/services/:name/banned-players` | List banned players. |
+| `POST` | `/f42/services/:name/banned-players` | Ban a player. Body: `{ "name": "Playername", "reason?": "..." }`. |
+| `DELETE` | `/f42/services/:name/banned-players/:player` | Unban a player (remove from banned list). |
 | `GET` | `/f42/services/:name/server.properties` | Read the service's `server.properties` as a parsed key-value object. |
 | `POST` | `/f42/services/:name/server.properties` | Change individual properties (backs up to `server.properties.bak` first). |
 | `GET` | `/f42/services/:name/core` | List the installed core and the NeoForge versions available to install. |
@@ -176,6 +179,16 @@ Notes:
 - Typed commands are not written to `latest.log` by default (Velocity has `log-command-executions = false`); the API echoes sent commands back on the WebSocket so the console stays coherent.
 - `latest.log` is recreated on each server start; the bot detects the rotation and picks up the new file automatically.
 - There is no TLS in the API server. It binds to loopback by default; if you expose it beyond localhost, front it with a reverse proxy.
+
+### Banned players
+
+Each service's `banned-players.json` lives at its `cwd/banned-players.json` (standard Minecraft/Paper format). The API can:
+
+- **`GET /f42/services/<name>/banned-players`** — List all banned entries (name, UUID, reason, created).
+- **`POST /f42/services/<name>/banned-players`** — Ban a player. Body: `{ "name": "Playername", "reason?": "..." }`. The bot resolves the player's UUID from Mojang's API and writes a full JSON entry.
+- **`DELETE /f42/services/<name>/banned-players/:player`** — Unban a player by name.
+
+All operations require `API_TOKEN` on the `x-api-key` header. UUIDs are resolved at ban-time; if the player has never connected to an online server, the ban still succeeds with an empty UUID field.
 
 ### File management (mods)
 

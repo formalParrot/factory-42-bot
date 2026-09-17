@@ -77,6 +77,16 @@ export async function writePropertiesAsRoot(path, content) {
   }
 }
 
+export async function writeFileAsRoot(path, content) {
+  const tmp = join(tmpdir(), `${path.split('/').pop()}.${process.pid}.${Date.now()}.tmp`);
+  await writeFile(tmp, content);
+  try {
+    await cpOverAsRoot(tmp, path);
+  } finally {
+    await unlink(tmp).catch(() => {});
+  }
+}
+
 // Runs a long command (installer, download) as root via `sudo bash -c`. Output
 // is buffered to the last ~20 KB so huge installer logs can't blow up memory.
 // Resolves with { code, out, timedOut }; kills the child on timeout.

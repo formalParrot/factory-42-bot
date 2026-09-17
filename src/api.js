@@ -12,6 +12,7 @@ import { getOnlinePlayers } from './players.js';
 import { listFiles, uploadFiles, deleteFile, disableFile, enableFile } from './files.js';
 import { entriesToObject, parseProperties, serializeProperties, setEntry } from './properties.js';
 import { coreBusy, coreConfigured, getCoreStatus, listAllVersions, updateCore } from './cores.js';
+import { listBannedPlayers, addBannedPlayer, removeBannedPlayer } from './bans.js';
 
 // Authenticated HTTP + WebSocket API exposing each service's console via its
 // logs/latest.log. All routes are under /f42. Sending commands reuses the same
@@ -343,6 +344,31 @@ async function handleRequest(req, res, pathname) {
           started: true,
           note: 'Core update started. Poll GET /f42/services/<name>/core to track it.',
         });
+      }
+      return json(res, 405, { error: 'Method not allowed.' });
+    });
+  }
+
+  // ── Banned players ──────────────────────────────────────────────
+  if (resource === 'services' && name && parts[3] === 'banned-players') {
+    return resolveServiceOr(res, name, async (index) => {
+      if (method === 'GET') {
+        const banned = await listBannedPlayers(index);
+        return json(res, 200, { name: config.services[index].name, banned });
+      }
+      if (method === 'POST') {
+        const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+        const playerName = typeof body.name === 'string' ? body.name.trim() : '';
+        if (!playerName) return json(res, 400, { error: 'Missing "name" string in body.' });
+        const reason = typeof body.reason === 'string' ? body.reason : '';
+        const result = await addBannedPlayer(index, playerName, reason);
+        return json(res, 201, { name: config.services[index].name, ...result });
+      }
+      if (method === 'DELETE') {
+        const playerName = parts[4];
+        if (!playerName) return json(res, 400, { error: 'Missing player name in URL.' });
+        const result = await removeBannedPlayer(index, decodeURIComponent(playerName));
+        return json(res, result.removed ? 200 : 404, { name: config.services[index].name, ...result });
       }
       return json(res, 405, { error: 'Method not allowed.' });
     });

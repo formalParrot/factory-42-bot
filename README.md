@@ -102,6 +102,10 @@ All requests carry the token on the `x-api-key` header.
 | `DELETE` | `/f42/services/:name/banned-players/:player` | Unban a player (remove from banned list). |
 | `GET` | `/f42/services/:name/server.properties` | Read the service's `server.properties` as a parsed key-value object. |
 | `POST` | `/f42/services/:name/server.properties` | Change individual properties (backs up to `server.properties.bak` first). |
+| `GET` | `/f42/services/:name/config` | List files in the service's `<cwd>/config` directory. |
+| `GET` | `/f42/services/:name/config/:file` | Read a config file's contents (supports subpaths like `jei/...`). |
+| `POST` | `/f42/services/:name/config/:file` | Create/overwrite a config file (`{"content":"..."}`, backs up to `:file.bak` first). |
+| `DELETE` | `/f42/services/:name/config/:file` | Delete a config file. |
 | `GET` | `/f42/services/:name/core` | List the installed core and the NeoForge versions available to install. |
 | `POST` | `/f42/services/:name/core` | Update the server core (body `{ "version": "..." }`); stops, installs and restarts the server. |
 | `GET` | `/f42/ws?service=:name&token=...` | WebSocket console: streams history then live lines; send `{ "command": "..." }` to run commands over the same socket. |
@@ -312,6 +316,71 @@ Response:
 Property names containing `=`, `:`, whitespace, `#`, `!`, or `\` are rejected with a `400` error.
 
 Note: `server.properties` is read on server startup. Changes made via this endpoint take effect the next time the server is restarted.
+
+### Config files
+
+Mod/plugin config files live in each service's `<cwd>/config` directory (e.g. Survival with `cwd: "/root/server"` uses `/root/server/config`). The API can list them, read individual files, edit them (backup first), and delete them. Subdirectories are supported (`config/jei/something.toml`); files in nested paths are validated against path traversal.
+
+List files (subdirectories report `"isDir": true`):
+
+```
+GET /f42/services/Survival/config
+x-api-key: $API_TOKEN
+```
+
+Response:
+
+```json
+{
+  "name": "Survival",
+  "path": "/root/server/config",
+  "files": [
+    { "name": "jei", "isDir": true, "size": 4096, "modified": "2026-09-15T10:30:00.000Z" },
+    { "name": "server.toml", "isDir": false, "size": 482031, "modified": "2026-09-15T10:30:00.000Z" }
+  ]
+}
+```
+
+Read a file's contents (1 MB read cap; larger files return `"truncated": true` with the first 1 MB):
+
+```
+GET /f42/services/Survival/config/server.toml
+x-api-key: $API_TOKEN
+```
+
+Response:
+
+```json
+{
+  "name": "Survival",
+  "path": "/root/server/config/server.toml",
+  "size": 2314,
+  "modified": "2026-09-15T10:30:00.000Z",
+  "truncated": false,
+  "content": "[server]\n...\n"
+}
+```
+
+Create or overwrite a file (the previous version is backed up to `:file.bak`; creating a new file returns `201`, overwriting returns `200`):
+
+```
+POST /f42/services/Survival/config/server.toml
+x-api-key: $API_TOKEN
+Content-Type: application/json
+
+{
+  "content": "[server]\nmotd = \"Hello\"\n"
+}
+```
+
+Delete a file (pass the filename URL-encoded, including any `/` for subpaths):
+
+```
+DELETE /f42/services/Survival/config/jei/something.toml
+x-api-key: $API_TOKEN
+```
+
+Directories cannot be read or deleted, and paths that escape `config/` (`..`, leading `/`, backslashes) are rejected with a `400`.
 
 ### Server cores
 

@@ -29,6 +29,21 @@ export async function listAsRoot(path) {
   return stdout.split('\n').filter(Boolean);
 }
 
+// Stats a single path via sudo. Resolves with { isDir, size, mtime }.
+export async function statAsRoot(path) {
+  const { stdout } = await execAsync(`sudo stat -c '%F|%s|%Y' ${shq(path)}`);
+  const [kind, size, mtime] = stdout.trim().split('|');
+  return {
+    isDir: kind === 'directory',
+    size: Number(size) || 0,
+    mtime: new Date(Number(mtime) * 1000).toISOString(),
+  };
+}
+
+export async function mkdirAsRoot(path) {
+  await execAsync(`sudo mkdir -p ${shq(path)}`);
+}
+
 export async function existsAsRoot(path) {
   try {
     await execAsync(`sudo test -e ${shq(path)}`);

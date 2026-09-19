@@ -10,6 +10,12 @@ import { startService, stopService, restartService } from './actions.js';
 import { getLastLines, latestLogPath, onLine } from './consoleLog.js';
 import { getOnlinePlayers } from './players.js';
 import { listFiles, uploadFiles, deleteFile, disableFile, enableFile } from './files.js';
+import {
+  listConfigFiles,
+  readConfigFile,
+  writeConfigFile,
+  deleteConfigFile,
+} from './configFiles.js';
 import { entriesToObject, parseProperties, serializeProperties, setEntry } from './properties.js';
 import { coreBusy, coreConfigured, getCoreStatus, listAllVersions, updateCore } from './cores.js';
 import { listBannedPlayers, addBannedPlayer, removeBannedPlayer } from './bans.js';
@@ -19,13 +25,14 @@ import { listBannedPlayers, addBannedPlayer, removeBannedPlayer } from './bans.j
 // tmux path the Discord controls use.
 
 const HOST = process.env.API_HOST || '127.0.0.1';
-const PORT = Number(process.env.API_PORT || 8080);
+const PORT = Number(process.env.API_PORT || 7080);
 const TOKEN = process.env.API_TOKEN;
 const AUTH_HEADER = (process.env.API_HEADER || 'x-api-key').toLowerCase();
 const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN;
 const WEBHOOK_HEADER = (process.env.WEBHOOK_HEADER || 'x-webhook-token').toLowerCase();
 const WS_HISTORY_LINES = 500;
 const MAX_BODY = 64 * 1024;
+const MAX_CONFIG_BODY = 512 * 1024;
 const KEY_RE = /^[^=:#!\s\\]+$/;
 const REPO_DIR = fileURLToPath(new URL('../', import.meta.url));
 const execAsync = promisify(exec);
@@ -41,14 +48,14 @@ function json(res, status, body) {
   res.end(payload);
 }
 
-function readBody(req) {
+function readBody(req, maxBytes = MAX_BODY) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on('data', (chunk) => {
       size += chunk.length;
-      if (size > MAX_BODY) {
-        reject(new Error('body too large'));
+      if (size > maxBytes) {
+        reject(new Error(`body too large (> ${maxBytes} bytes)`));
         req.destroy();
         return;
       }
@@ -297,6 +304,62 @@ async function handleRequest(req, res, pathname) {
           updated: applied,
           properties: entriesToObject(entries),
         });
+      }
+
+      return json(res, 405, { error: 'Method not allowed.' });
+    });
+  }
+
+  // ── Config files ────────────────────────────────────────────────────────
+  // GET  /f42/services/<name>/config            — list files in <cwd>/config
+  // GET  /f42/services/<name>/config/<file>     — read a file's contents
+  // POST /f42/services/<name>/config/<file>     — create/overwrite (backs up first)
+  // DELETE /f42/services/<name>/config/<file>   — delete a file
+  if (resource === 'services' && name && parts[3] === 'config') {
+    const filePath = parts[4] ? decodeURIComponent(parts.slice(4).join('/')) : '';
+
+    if (!filePath) {
+      return resolveServiceOr(res, name, async (index) => {
+        if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
+        const result = await listConfigFiles(config.services[index].cwd);
+        return json(res, 200, { name: config.services[index].name, ...result });
+      });
+    }
+
+    return resolveServiceOr(res, name, async (index) => {
+      const serviceName = config.services[index].name;
+
+      if (method === 'GET') {
+        const result = await readConfigFile(config.services[index].cwd, filePath);
+        if (result.error) {
+          return json(res, result.error.includes('not found') ? 404 : 400, { name: serviceName, error: result.error });
+        }
+        return json(res, 200, { name: serviceName, ...result });
+      }
+
+      if (method === 'POST') {
+        let body;
+        try {
+          body = JSON.parse((await readBody(req, MAX_CONFIG_BODY)).toString('utf8') || '{}');
+        } catch (err) {
+          return json(res, 400, { error: err.message });
+        }
+        if (typeof body.content !== 'string') {
+          return json(res, 400, { error: 'Body must contain a "content" string, e.g. {"content":"..."}.' });
+        }
+        const result = await writeConfigFile(config.services[index].cwd, filePath, body.content);
+        if (result.error) {
+          return json(res, 400, { name: serviceName, error: result.error });
+        }
+        return json(res, result.created ? 201 : 200, { name: serviceName, ...result });
+      }
+
+      if (method === 'DELETE') {
+        const result = await deleteConfigFile(config.services[index].cwd, filePath);
+        if (result.error) {
+          return json(res, result.error.includes('not found') ? 404 : 400, { name: serviceName, error: result.error });
+        }
+        return json(res, 200, { name: serviceName, ...result });
       }
 
       return json(res, 405, { error: 'Method not allowed.' });

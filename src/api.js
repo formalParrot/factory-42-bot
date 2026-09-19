@@ -25,7 +25,7 @@ import { listBannedPlayers, addBannedPlayer, removeBannedPlayer } from './bans.j
 // tmux path the Discord controls use.
 
 const HOST = process.env.API_HOST || '127.0.0.1';
-const PORT = Number(process.env.API_PORT || 7080);
+const PORT = Number(process.env.API_PORT || 8080);
 const TOKEN = process.env.API_TOKEN;
 const AUTH_HEADER = (process.env.API_HEADER || 'x-api-key').toLowerCase();
 const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN;

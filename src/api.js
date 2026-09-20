@@ -19,6 +19,7 @@ import {
 import { entriesToObject, parseProperties, serializeProperties, setEntry } from './properties.js';
 import { coreBusy, coreConfigured, getCoreStatus, listAllVersions, updateCore } from './cores.js';
 import { listBannedPlayers, addBannedPlayer, removeBannedPlayer } from './bans.js';
+import { attachRootShell } from './shell.js';
 
 // Authenticated HTTP + WebSocket API exposing each service's console via its
 // logs/latest.log. All routes are under /f42. Sending commands reuses the same
@@ -147,6 +148,8 @@ async function handleRequest(req, res, pathname) {
   }
 
   if (resource === 'ws') return json(res, 404, { error: 'Use the WebSocket endpoint at /f42/ws?service=<name>.' });
+
+  if (resource === 'root') return json(res, 404, { error: 'Use the WebSocket endpoint at /f42/root.' });
 
   if (resource === 'services' && name && !action) {
     if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
@@ -501,13 +504,17 @@ export function startApiServer() {
 
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, 'http://localhost');
-    if (url.pathname !== '/f42/ws') {
+    if (url.pathname !== '/f42/ws' && url.pathname !== '/f42/root') {
       socket.destroy();
       return;
     }
     if (!authorizedByToken(req)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
+      return;
+    }
+    if (url.pathname === '/f42/root') {
+      wss.handleUpgrade(req, socket, head, (ws) => attachRootShell(ws));
       return;
     }
     const index = findService(url.searchParams.get('service'));

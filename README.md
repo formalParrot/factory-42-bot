@@ -109,6 +109,7 @@ All requests carry the token on the `x-api-key` header.
 | `GET` | `/f42/services/:name/core` | List the installed core and the NeoForge versions available to install. |
 | `POST` | `/f42/services/:name/core` | Update the server core (body `{ "version": "..." }`); stops, installs and restarts the server. |
 | `GET` | `/f42/ws?service=:name&token=...` | WebSocket console: streams history then live lines; send `{ "command": "..." }` to run commands over the same socket. |
+| `GET` | `/f42/root?token=...` | WebSocket root shell: a real `sudo -i` login shell; same message protocol as `/f42/ws`, but commands run in a bash shell instead of a server console. |
 
 `stop`/`restart` act like the Discord buttons (graceful stop, force-kill after 60s).
 
@@ -177,6 +178,16 @@ cut off; the pm2 process is detached from the bot so it survives the bot exiting
 `{ "command": "list" }` to run a command; you get back
 `{ "type": "echo", "text": "list" }` on success or
 `{ "type": "error", "error": "..." }` on failure.
+
+`GET /f42/root?token=...` — a root shell (spawns `sudo -i`; needs passwordless sudo,
+same as the rest of the bot). It uses the same frame protocol as `/f42/ws` but the
+commands are executed by bash rather than a Minecraft console, so it works like a
+normal terminal: `{ "command": "cd /root && ls -la" }` runs in the shell, shell
+state (cwd, environment, variables) persists across commands, and output streams
+back as `{ "type": "line", "text": "..." }` frames. On connect the server sends
+`{ "type": "status", "name": "root", "running": true, "shell": "sudo -i" }`; typing
+`exit` (or the shell dying) sends `{ "type": "status", "running": false }` and
+closes the socket. There is no scrollback/history replay — it's a live shell.
 
 Notes:
 

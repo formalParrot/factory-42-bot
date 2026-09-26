@@ -17,6 +17,16 @@
       "ping": { "host": "127.0.0.1", "port": 25565 }
     },
     {
+      "name": "Lobby",
+      "tmuxSession": "mcserver-lobby",
+      "cwd": "/root/lobby",
+      "latestLog": "/root/lobby/logs/latest.log",
+      "startCommand": "bash run.sh",
+      "stopConsoleCommand": "stop",
+      "core": { "type": "neoforge" },
+      "ping": { "host": "127.0.0.1", "port": 25568 }
+    },
+    {
       "name": "Survival",
       "tmuxSession": "mcserver",
       "cwd": "/root/server",

@@ -34,8 +34,9 @@ import {
 
 // Authenticated HTTP + WebSocket API exposing each service's console via its
 // logs/latest.log. All routes are under /f42. Sending commands reuses the same
-// tmux path the Discord controls use. The single exception is the public
-// whitelist request intake, which is unauthenticated and rate limited instead.
+// tmux path the Discord controls use. The exception is the whitelist: its
+// request intake and lookups are unauthenticated and rate limited instead, so
+// a public page can submit a request and poll whether a player is whitelisted.
 
 const HOST = process.env.API_HOST || '127.0.0.1';
 const PORT = Number(process.env.API_PORT || 8080);
@@ -47,6 +48,9 @@ const TRUST_PROXY = /^(1|true|yes)$/i.test(process.env.TRUST_PROXY || '');
 // Clamped so a typo in .env cannot disable the limiter (NaN compares false
 // against every count) or lock the endpoint out entirely.
 const WHITELIST_REQUESTS_PER_HOUR = Math.max(1, Number(process.env.WHITELIST_REQUESTS_PER_HOUR) || 5);
+// The public lookups are polled rather than submitted, so they get their own,
+// far more generous limit. 0 disables it; see rejectIfRateLimited.
+const WHITELIST_READS_PER_MINUTE = Number(process.env.WHITELIST_READS_PER_MINUTE ?? 60);
 const WHITELIST_STATUSES = ['pending', 'approved', 'denied'];
 const WS_HISTORY_LINES = 500;
 const MAX_BODY = 64 * 1024;
@@ -61,6 +65,11 @@ const whitelistLimiter = createRateLimiter({
   limit: WHITELIST_REQUESTS_PER_HOUR,
   windowMs: 60 * 60 * 1000,
 });
+
+const whitelistReadLimiter =
+  WHITELIST_READS_PER_MINUTE > 0
+    ? createRateLimiter({ limit: WHITELIST_READS_PER_MINUTE, windowMs: 60 * 1000 })
+    : null;
 
 function json(res, status, body) {
   const payload = JSON.stringify(body);
@@ -133,6 +142,23 @@ function clientKey(req) {
   return req.socket.remoteAddress || 'unknown';
 }
 
+// Applies the (deliberately loose) limit on the public whitelist lookups, which
+// exist to be polled. Every lookup costs a sudo read per service, so this only
+// exists to stop a flood, not to ration use. Responds 429 and returns true when
+// the caller is over the limit.
+function rejectIfRateLimited(req, res) {
+  if (!whitelistReadLimiter) return false;
+  const result = whitelistReadLimiter.check(clientKey(req));
+  if (result.allowed) return false;
+  const retryAfter = Math.ceil(result.retryAfterMs / 1000);
+  res.setHeader('Retry-After', String(retryAfter));
+  json(res, 429, {
+    error: `Rate limit exceeded: ${whitelistReadLimiter.limit} whitelist lookups per minute. Try again in ${retryAfter}s.`,
+    retryAfterSeconds: retryAfter,
+  });
+  return true;
+}
+
 async function handleRequest(req, res, pathname) {
   const parts = pathname.split('/').filter(Boolean);
   const method = req.method;
@@ -141,42 +167,69 @@ async function handleRequest(req, res, pathname) {
 
   const [resource, name, action] = parts.slice(1);
 
-  // ── Whitelist requests: public intake ───────────────────────────────────
-  // The one route that takes no key, so a public web form can post straight to
-  // it. The rate limit is the only gate, so it is checked before the body is
-  // even read and it is deliberately tight.
-  if (resource === 'whitelist' && name === 'request' && !action) {
-    if (method !== 'POST') return json(res, 405, { error: 'Method not allowed.' });
-    const key = clientKey(req);
-    const limit = whitelistLimiter.check(key);
-    if (!limit.allowed) {
-      const retryAfter = Math.ceil(limit.retryAfterMs / 1000);
-      res.setHeader('Retry-After', String(retryAfter));
-      return json(res, 429, {
-        error: `Rate limit exceeded: ${whitelistLimiter.limit} whitelist requests per hour. Try again in ${retryAfter}s.`,
-        retryAfterSeconds: retryAfter,
+  // ── Whitelist: public ──────────────────────────────────────────────────
+  // These take no key so a public page can post a request and poll whether a
+  // player is whitelisted yet. The POST is rate limited hard because it writes
+  // to the queue; the GETs are limited loosely because they only read, and
+  // polling them is the intended use. Anything else under /f42/whitelist falls
+  // through to the auth check below.
+  if (resource === 'whitelist' && (name === 'request' || !name)) {
+    // POST /f42/whitelist/request — queue a request for an admin to action.
+    if (name === 'request') {
+      if (method !== 'POST') return json(res, 405, { error: 'Method not allowed.' });
+      const key = clientKey(req);
+      const limit = whitelistLimiter.check(key);
+      if (!limit.allowed) {
+        const retryAfter = Math.ceil(limit.retryAfterMs / 1000);
+        res.setHeader('Retry-After', String(retryAfter));
+        return json(res, 429, {
+          error: `Rate limit exceeded: ${whitelistLimiter.limit} whitelist requests per hour. Try again in ${retryAfter}s.`,
+          retryAfterSeconds: retryAfter,
+        });
+      }
+
+      let body;
+      try {
+        body = await readJson(req);
+      } catch (err) {
+        return json(res, 400, { error: `Could not read JSON body: ${err.message}` });
+      }
+      const playerName = typeof body.name === 'string' ? body.name.trim() : '';
+      if (!playerName) return json(res, 400, { error: 'Missing "name" string in body, e.g. {"name":"Playername"}.' });
+      if (!isValidPlayerName(playerName)) {
+        return json(res, 400, { error: 'Name must be 3-16 characters of letters, digits or underscore.' });
+      }
+
+      const { request, already } = createRequest(playerName, body.contact, key);
+      return json(res, already ? 200 : 202, {
+        status: request.status,
+        name: request.name,
+        requestedAt: request.requestedAt,
+        already,
+        note: 'Request received. An admin still has to approve it before you can join.',
       });
     }
 
-    let body;
-    try {
-      body = await readJson(req);
-    } catch (err) {
-      return json(res, 400, { error: `Could not read JSON body: ${err.message}` });
-    }
-    const playerName = typeof body.name === 'string' ? body.name.trim() : '';
-    if (!playerName) return json(res, 400, { error: 'Missing "name" string in body, e.g. {"name":"Playername"}.' });
-    if (!isValidPlayerName(playerName)) {
+    // GET /f42/whitelist?player=Notch — where a player stands, per service,
+    // read from each server's own whitelist.json. Without ?player it is the
+    // network-wide view instead.
+    if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
+    if (rejectIfRateLimited(req, res)) return;
+    const player = (new URL(req.url, 'http://localhost').searchParams.get('player') || '').trim();
+    if (!player) return json(res, 200, await listWhitelistEverywhere());
+    if (!isValidPlayerName(player)) {
       return json(res, 400, { error: 'Name must be 3-16 characters of letters, digits or underscore.' });
     }
+    return json(res, 200, await checkPlayerEverywhere(player));
+  }
 
-    const { request, already } = createRequest(playerName, body.contact, key);
-    return json(res, already ? 200 : 202, {
-      status: request.status,
-      name: request.name,
-      requestedAt: request.requestedAt,
-      already,
-      note: 'Request received. An admin still has to approve it before you can join.',
+  // GET /f42/services/:name/whitelist — one server's whitelist, public for the
+  // same reason as /f42/whitelist, and rate limited by the same bucket.
+  if (resource === 'services' && name && parts[3] === 'whitelist' && !parts[4] && method === 'GET') {
+    if (rejectIfRateLimited(req, res)) return;
+    return resolveServiceOr(res, name, async (index) => {
+      const result = await listWhitelistedPlayers(index);
+      return json(res, 200, { name: config.services[index].name, ...result });
     });
   }
 
@@ -195,20 +248,10 @@ async function handleRequest(req, res, pathname) {
     return json(res, 200, { ok: true, uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000) });
   }
 
-  // ── Whitelist requests: admin queue ─────────────────────────────────────
+  // ── Whitelist: admin ────────────────────────────────────────────────────
+  // The public request intake and lookups are handled above, before the auth
+  // gate; what remains is the queue and the approvals.
   if (resource === 'whitelist') {
-    // GET /f42/whitelist?player=Notch — where a player actually stands, per
-    // service, read from each server's own whitelist.json. Without ?player it
-    // is the network-wide view instead.
-    if (!name && method === 'GET') {
-      const player = (new URL(req.url, 'http://localhost').searchParams.get('player') || '').trim();
-      if (!player) return json(res, 200, await listWhitelistEverywhere());
-      if (!isValidPlayerName(player)) {
-        return json(res, 400, { error: 'Name must be 3-16 characters of letters, digits or underscore.' });
-      }
-      return json(res, 200, await checkPlayerEverywhere(player));
-    }
-
     if (name === 'requests' && !action) {
       if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
       const status = (new URL(req.url, 'http://localhost').searchParams.get('status') || '')
@@ -560,17 +603,6 @@ async function handleRequest(req, res, pathname) {
         });
       }
       return json(res, 405, { error: 'Method not allowed.' });
-    });
-  }
-
-  // ── Whitelisted players ─────────────────────────────────────────────────
-  // The server's own whitelist.json, as opposed to /f42/whitelist which spans
-  // every service.
-  if (resource === 'services' && name && parts[3] === 'whitelist' && !parts[4]) {
-    if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
-    return resolveServiceOr(res, name, async (index) => {
-      const result = await listWhitelistedPlayers(index);
-      return json(res, 200, { name: config.services[index].name, ...result });
     });
   }
 

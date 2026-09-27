@@ -129,6 +129,7 @@ cp .env.example .env
 | `WEBHOOK_HEADER` | no | Header carrying `WEBHOOK_TOKEN` (default `x-webhook-token`). |
 | `TRUST_PROXY` | no | Set to `1` to take the client IP from `x-forwarded-for`. Only do this behind a proxy that sets it. |
 | `WHITELIST_REQUESTS_PER_HOUR` | no | Whitelist requests allowed per IP per hour (default `5`, minimum `1`). |
+| `WHITELIST_READS_PER_MINUTE` | no | Whitelist lookups allowed per IP per minute (default `60`). `0` disables the limit. |
 | `API_BASE_URL` | no | Proxmox panel base URL, e.g. `https://panel.example.org/api`. |
 | `PANEL_TOKEN` | no | Proxmox panel key, sent as `Authorization: Bearer`. |
 | `START_STOP_WEBHOOK_URL` | no | Endpoint POSTed to whenever a service starts or stops. |
@@ -279,19 +280,43 @@ start/stop/restart, touch files or cores, or open a WebSocket. It exists so an
 external monitor can check one service without holding an admin key. Sending a
 webhook token to any other route returns `403`.
 
-**One route needs no token at all:** `POST /f42/whitelist/request`, the public
-whitelist intake. It is rate limited instead — see
-[Whitelist](#whitelist).
+**The four whitelist routes need no token at all**, so a public page can submit
+a request and poll whether a player is whitelisted yet:
+
+| Route | Purpose |
+|---|---|
+| `POST /f42/whitelist/request` | Queue a whitelist request. |
+| `GET /f42/whitelist?player=Notch` | Is this player whitelisted, per service? |
+| `GET /f42/whitelist` | Every service's whitelist, plus the union of names. |
+| `GET /f42/services/:name/whitelist` | One server's whitelist. |
+
+They are rate limited instead, and `GET /f42/whitelist/requests`,
+`POST /f42/whitelist/approve` and `POST /f42/whitelist/deny` still need
+`API_TOKEN` — the queue, its contact details and the IP each request came from
+are never public. Note that the bare `GET /f42/whitelist` publishes the full
+player roster to anyone; `?player=` is the one that only reveals a name the
+caller already knows. See [Whitelist](#whitelist).
 
 WebSocket upgrades cannot carry custom headers from a browser, so they also
 accept the admin key as a `?token=` query parameter.
 
 ### Rate limiting
 
-Only the public whitelist intake is rate limited: **5 requests per IP per hour**
-by default, changed with `WHITELIST_REQUESTS_PER_HOUR`. Exceeding it returns
-`429` with a `Retry-After` header and a `retryAfterSeconds` field. The window
-slides, so the counter refills gradually rather than all at once on the hour.
+Only the whitelist routes are rate limited, on two separate budgets:
+
+| Routes | Default | Env var |
+|---|---|---|
+| `POST /f42/whitelist/request` | 5 per IP per hour | `WHITELIST_REQUESTS_PER_HOUR` |
+| The three public whitelist GETs | 60 per IP per minute | `WHITELIST_READS_PER_MINUTE` (0 disables) |
+
+The POST is tight because it writes to the queue. The GETs are loose because
+they only read and polling them is the intended use; the limit exists to stop a
+flood, since each lookup costs a `sudo` read per service. Both windows slide, so
+a counter refills gradually rather than all at once. Exceeding either returns
+`429` with a `Retry-After` header and a `retryAfterSeconds` field.
+
+The request limit is charged before the body is even parsed, so a flood of
+malformed requests costs the caller their quota rather than the server its time.
 
 The client IP comes from the socket. If the API sits behind a reverse proxy, set
 `TRUST_PROXY=1` to use the first `x-forwarded-for` entry instead — without it,
@@ -317,12 +342,16 @@ route. A `WEBHOOK_TOKEN` gets `403` on all of them.
 
 | Method | Route | Auth | Description |
 |---|---|---|---|
-| `POST` | `/f42/whitelist/request` | none | Public request. Rate limited to 5/hour per IP. |
-| `GET` | `/f42/whitelist?player=Notch` | admin | Is this player on each server's real whitelist? |
-| `GET` | `/f42/whitelist` | admin | Every service's whitelist, plus the union of names. |
+| `POST` | `/f42/whitelist/request` | **none** | Queue a request. Rate limited to 5/hour per IP. |
+| `GET` | `/f42/whitelist?player=Notch` | **none** | Is this player on each server's real whitelist? |
+| `GET` | `/f42/whitelist` | **none** | Every service's whitelist, plus the union of names. |
+| `GET` | `/f42/services/:name/whitelist` | **none** | That server's own `whitelist.json`. |
 | `GET` | `/f42/whitelist/requests` | admin | The request queue. Optional `?status=pending\|approved\|denied`. |
 | `POST` | `/f42/whitelist/approve` | admin | Approve a request; runs the command on every service. |
 | `POST` | `/f42/whitelist/deny` | admin | Reject a pending request. |
+
+The four un-authenticated rows are rate limited per IP — 5/hour for the POST, 60
+per minute for the GETs, so a page can poll them. The rest need `API_TOKEN`.
 
 #### Services
 
@@ -330,7 +359,6 @@ route. A `WEBHOOK_TOKEN` gets `403` on all of them.
 |---|---|---|
 | `GET` | `/f42/services` | List every service: running state, port, log path, online players. |
 | `GET` | `/f42/services/:name` | Single-service status. The only route a `WEBHOOK_TOKEN` may call. |
-| `GET` | `/f42/services/:name/whitelist` | That server's own `whitelist.json`. |
 | `GET` | `/f42/services/:name/console?lines=200` | Last N console lines (default 500). |
 | `POST` | `/f42/services/:name/console` | Send a console command, body `{ "command": "list" }`. |
 | `POST` | `/f42/services/:name/start` | Create the tmux session and launch the server. |
@@ -498,17 +526,18 @@ if the player was already approved and whitelisted, use the console to run
 request for that name, which keeps them from becoming a way to act on arbitrary
 usernames.
 
-#### Checking a username
+#### 5. Checking a username — no key required
 
 The queue tells you who *asked*. These reads tell you who is *actually
 whitelisted*, straight from each server's `whitelist.json` — the same file the
 `whitelist add` command makes the server write. This is the check to run before
-approving, and the one to run when someone says they were approved but cannot
-join.
+approving, the one to run when someone says they were approved but cannot join,
+and the one a public page can poll to show someone their own status.
+
+All three need no token, so they are meant to be called without one:
 
 ```
 GET /f42/whitelist?player=Notch
-x-api-key: $API_TOKEN
 ```
 
 ```json
@@ -536,7 +565,6 @@ Per-service, without the cross-network verdict:
 
 ```
 GET /f42/services/Survival/whitelist
-x-api-key: $API_TOKEN
 ```
 
 ```json
@@ -557,7 +585,6 @@ And the network-wide view, which is the union of every service's whitelist:
 
 ```
 GET /f42/whitelist
-x-api-key: $API_TOKEN
 ```
 
 ```json
@@ -566,6 +593,12 @@ x-api-key: $API_TOKEN
   "players": ["jeb_", "Notch"]
 }
 ```
+
+Being unauthenticated, these three are limited to 60 per IP per minute
+(`WHITELIST_READS_PER_MINUTE`, `0` disables) rather than the POST's 5 per hour.
+They are read-only, but the bare `GET /f42/whitelist` does publish the whole
+roster and every UUID in it to anyone who asks — `?player=` is the one that only
+reveals a name the caller already knows, so prefer it for anything user-facing.
 
 Reading the files:
 
@@ -584,7 +617,8 @@ Reading the files:
   disk right now. Minecraft applies `whitelist add` immediately, so no restart
   is needed; but a service that is stopped still reports its last saved state,
   which may be stale.
-- `WEBHOOK_TOKEN` gets `403` on all of these — they expose the player roster.
+- `WEBHOOK_TOKEN` is irrelevant here — these routes are public, so a webhook
+  token is neither needed nor rejected.
 
 #### Notes
 
@@ -898,8 +932,13 @@ removed first, as the official install script does.
 - **Size caps** exist where a flood would hurt: 64 KB request bodies (512 KB for
   config writes), 250 MB uploads, 1 MB config reads, a 1500-line console ring
   buffer and a 1 MB log poll chunk.
-- **The one unauthenticated route** is `POST /f42/whitelist/request`. It reveals
-  nothing, does no I/O beyond an in-memory insert, and is rate limited per IP.
+- **The unauthenticated surface is the four whitelist routes.** Three of them
+  read `whitelist.json`, so anyone who can reach the API can read who is
+  whitelisted and every whitelisted player's UUID — including the bare
+  `GET /f42/whitelist`, which returns the whole roster. If that matters for your
+  network, put those behind the reverse proxy rather than exposing the API
+  directly, or drop the bare GET. They reveal no IP addresses, contact details,
+  queue state, or anything about the host itself.
 - **Logs follow the servers.** Typed commands are not written to `latest.log` by
   default, so command history is not retained server-side.
 

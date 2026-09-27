@@ -22,7 +22,7 @@ requests from the public internet.
   - [Authentication](#authentication)
   - [Rate limiting](#rate-limiting)
   - [Endpoint reference](#endpoint-reference)
-  - [Whitelist requests](#whitelist-requests)
+  - [Whitelist](#whitelist)
   - [Services and consoles](#services-and-consoles)
   - [WebSockets](#websockets)
   - [Mods](#mods)
@@ -59,7 +59,8 @@ requests from the public internet.
 - Ban and unban players, with Mojang UUID resolution.
 - Install and upgrade NeoForge server cores without leaving the API.
 - Accept whitelist requests from anyone, and approve or deny them as an admin —
-  approval runs the command on every service at once.
+  approval runs the command on every service at once — plus check whether a
+  player is actually whitelisted anywhere in the network.
 
 ---
 
@@ -280,7 +281,7 @@ webhook token to any other route returns `403`.
 
 **One route needs no token at all:** `POST /f42/whitelist/request`, the public
 whitelist intake. It is rate limited instead — see
-[Whitelist requests](#whitelist-requests).
+[Whitelist](#whitelist).
 
 WebSocket upgrades cannot carry custom headers from a browser, so they also
 accept the admin key as a `?token=` query parameter.
@@ -317,7 +318,9 @@ route. A `WEBHOOK_TOKEN` gets `403` on all of them.
 | Method | Route | Auth | Description |
 |---|---|---|---|
 | `POST` | `/f42/whitelist/request` | none | Public request. Rate limited to 5/hour per IP. |
-| `GET` | `/f42/whitelist/requests` | admin | The queue. Optional `?status=pending\|approved\|denied`. |
+| `GET` | `/f42/whitelist?player=Notch` | admin | Is this player on each server's real whitelist? |
+| `GET` | `/f42/whitelist` | admin | Every service's whitelist, plus the union of names. |
+| `GET` | `/f42/whitelist/requests` | admin | The request queue. Optional `?status=pending\|approved\|denied`. |
 | `POST` | `/f42/whitelist/approve` | admin | Approve a request; runs the command on every service. |
 | `POST` | `/f42/whitelist/deny` | admin | Reject a pending request. |
 
@@ -327,6 +330,7 @@ route. A `WEBHOOK_TOKEN` gets `403` on all of them.
 |---|---|---|
 | `GET` | `/f42/services` | List every service: running state, port, log path, online players. |
 | `GET` | `/f42/services/:name` | Single-service status. The only route a `WEBHOOK_TOKEN` may call. |
+| `GET` | `/f42/services/:name/whitelist` | That server's own `whitelist.json`. |
 | `GET` | `/f42/services/:name/console?lines=200` | Last N console lines (default 500). |
 | `POST` | `/f42/services/:name/console` | Send a console command, body `{ "command": "list" }`. |
 | `POST` | `/f42/services/:name/start` | Create the tmux session and launch the server. |
@@ -366,12 +370,14 @@ route. A `WEBHOOK_TOKEN` gets `403` on all of them.
 | `/f42/ws?service=:name&token=...` | Console stream: history, then live lines; send commands over the socket. |
 | `/f42/root?token=...` | A real `sudo -i` root shell with the same message protocol. |
 
-### Whitelist requests
+### Whitelist
 
 Minecraft whitelists are per server, so joining one network usually means being
 whitelisted on the proxy and every backend. This is the workflow that automates
 it: a public form posts a name, an admin approves it once, and the bot types
-`whitelist add <player>` into **every** configured service.
+`whitelist add <player>` into **every** configured service. The same section
+then covers the other half — reading each server's real `whitelist.json` back,
+so you can check a username without guessing.
 
 #### 1. Anyone can ask — no key required
 
@@ -491,6 +497,94 @@ if the player was already approved and whitelisted, use the console to run
 `whitelist remove <player>`. Both endpoints return `404` if there is no tracked
 request for that name, which keeps them from becoming a way to act on arbitrary
 usernames.
+
+#### Checking a username
+
+The queue tells you who *asked*. These reads tell you who is *actually
+whitelisted*, straight from each server's `whitelist.json` — the same file the
+`whitelist add` command makes the server write. This is the check to run before
+approving, and the one to run when someone says they were approved but cannot
+join.
+
+```
+GET /f42/whitelist?player=Notch
+x-api-key: $API_TOKEN
+```
+
+```json
+{
+  "player": "Notch",
+  "services": [
+    { "name": "Survival", "exists": true, "error": null, "whitelisted": true, "entry": { "uuid": "069a79f4-44e9-4726-a5be-fca90e38aaf5", "name": "Notch" } },
+    { "name": "Creative", "exists": true, "error": null, "whitelisted": false, "entry": null },
+    { "name": "Lobby", "exists": true, "error": null, "whitelisted": true, "entry": { "uuid": "069a79f4-44e9-4726-a5be-fca90e38aaf5", "name": "Notch" } },
+    { "name": "Velocity", "exists": false, "error": null, "whitelisted": false, "entry": null }
+  ],
+  "checkedServices": ["Survival", "Creative", "Lobby"],
+  "whitelistedEverywhere": false
+}
+```
+
+`whitelistedEverywhere` is the headline answer: `true` only when the player is on
+every service that maintains a `whitelist.json`. Services reporting
+`"exists": false` are excluded from that verdict, because a service with no
+whitelist file (Velocity delegates to a plugin) would otherwise make the answer
+permanently `false`. `checkedServices` names exactly which services the verdict
+was based on.
+
+Per-service, without the cross-network verdict:
+
+```
+GET /f42/services/Survival/whitelist
+x-api-key: $API_TOKEN
+```
+
+```json
+{
+  "name": "Survival",
+  "path": "/root/server/whitelist.json",
+  "exists": true,
+  "count": 2,
+  "players": [
+    { "uuid": "069a79f4-44e9-4726-a5be-fca90e38aaf5", "name": "Notch" },
+    { "uuid": "853c80ef-3c37-49fd-aa49-938b674adae6", "name": "jeb_" }
+  ],
+  "error": null
+}
+```
+
+And the network-wide view, which is the union of every service's whitelist:
+
+```
+GET /f42/whitelist
+x-api-key: $API_TOKEN
+```
+
+```json
+{
+  "services": [ { "name": "Survival", "path": "...", "exists": true, "count": 2, "players": [], "error": null } ],
+  "players": ["jeb_", "Notch"]
+}
+```
+
+Reading the files:
+
+- **`exists`** is `false` when the service has no `whitelist.json` at all. That is
+  the normal state for a server nobody has approved yet, and for Velocity, which
+  has no such file unless a plugin creates one. It is deliberately *not* reported
+  as an empty whitelist.
+- **`error`** carries a message when the file exists but could not be read or
+  parsed, so a broken file is never silently reported as "not whitelisted".
+- **Entries with `"name": null`** are players the server recorded by UUID only.
+  They appear in listings but can never match a name lookup, because the file
+  does not say what they are called.
+- **Names are matched case-insensitively**, and entries without dashes in the
+  UUID are returned exactly as the server wrote them.
+- **These are file reads, not console commands**, so they reflect what is on
+  disk right now. Minecraft applies `whitelist add` immediately, so no restart
+  is needed; but a service that is stopped still reports its last saved state,
+  which may be stale.
+- `WEBHOOK_TOKEN` gets `403` on all of these — they expose the player roster.
 
 #### Notes
 
@@ -863,7 +957,7 @@ Plain ESM JavaScript on `node:http` and `ws` — no framework, no build step.
 | `commands.js` | Slash command definitions and registration. |
 | `panel.js` | Proxmox panel API client and usage formatting. |
 | `api.js` | The HTTP + WebSocket API: routing, auth, body handling. |
-| `whitelist.js` | Whitelist request queue and the all-services approve fan-out. |
+| `whitelist.js` | Whitelist request queue, the all-services approve fan-out, and reads of each server's real `whitelist.json`. |
 | `rateLimit.js` | Sliding-window rate limiter. |
 | `files.js` | Mods directory: list, upload, delete, enable/disable. |
 | `configFiles.js` | Config directory: list, read, write, delete, path validation. |

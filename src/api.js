@@ -23,10 +23,13 @@ import { attachRootShell } from './shell.js';
 import { createRateLimiter } from './rateLimit.js';
 import {
   approveRequest,
+  checkPlayerEverywhere,
   createRequest,
   denyRequest,
   isValidPlayerName,
   listRequests,
+  listWhitelistEverywhere,
+  listWhitelistedPlayers,
 } from './whitelist.js';
 
 // Authenticated HTTP + WebSocket API exposing each service's console via its
@@ -194,6 +197,18 @@ async function handleRequest(req, res, pathname) {
 
   // ── Whitelist requests: admin queue ─────────────────────────────────────
   if (resource === 'whitelist') {
+    // GET /f42/whitelist?player=Notch — where a player actually stands, per
+    // service, read from each server's own whitelist.json. Without ?player it
+    // is the network-wide view instead.
+    if (!name && method === 'GET') {
+      const player = (new URL(req.url, 'http://localhost').searchParams.get('player') || '').trim();
+      if (!player) return json(res, 200, await listWhitelistEverywhere());
+      if (!isValidPlayerName(player)) {
+        return json(res, 400, { error: 'Name must be 3-16 characters of letters, digits or underscore.' });
+      }
+      return json(res, 200, await checkPlayerEverywhere(player));
+    }
+
     if (name === 'requests' && !action) {
       if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
       const status = (new URL(req.url, 'http://localhost').searchParams.get('status') || '')
@@ -545,6 +560,17 @@ async function handleRequest(req, res, pathname) {
         });
       }
       return json(res, 405, { error: 'Method not allowed.' });
+    });
+  }
+
+  // ── Whitelisted players ─────────────────────────────────────────────────
+  // The server's own whitelist.json, as opposed to /f42/whitelist which spans
+  // every service.
+  if (resource === 'services' && name && parts[3] === 'whitelist' && !parts[4]) {
+    if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
+    return resolveServiceOr(res, name, async (index) => {
+      const result = await listWhitelistedPlayers(index);
+      return json(res, 200, { name: config.services[index].name, ...result });
     });
   }
 

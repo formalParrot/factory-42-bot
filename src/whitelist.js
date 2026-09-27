@@ -1,13 +1,21 @@
-// Whitelist requests. Anyone can ask to be whitelisted through the public
-// endpoint (rate limited, no key); an admin then approves or denies. Approving
-// types the same `whitelist add <player>` command into every configured service
-// console, which is how each server's own whitelist is maintained.
+// Two things live here, both about the whitelist:
 //
-// The queue is in-memory like the rest of the bot's transient state, so pending
-// requests do not survive a bot restart. Approvals are not lost by that: the
-// servers keep their whitelists, and a fresh request can be made at any time.
+//  1. The request queue. Anyone can ask to be whitelisted through the public
+//     endpoint (rate limited, no key); an admin then approves or denies.
+//     Approving types the same `whitelist add <player>` command into every
+//     configured service console, which is how each server's own whitelist is
+//     maintained. The queue is in-memory like the rest of the bot's transient
+//     state, so pending requests do not survive a bot restart — approvals are
+//     not lost by that, since the servers keep their whitelists either way.
+//
+//  2. Reads of the servers' real whitelists (`<cwd>/whitelist.json`), so an
+//     admin can see who is actually able to join rather than who merely asked.
+//     Velocity has no such file — it delegates whitelisting to a plugin — so
+//     those reads report `exists: false` rather than pretending it is empty.
+import { join } from 'node:path';
 import config from './config.js';
 import { sendConsole, sessionExists } from './tmux.js';
+import { catAsRoot, existsAsRoot } from './root.js';
 
 // Minecraft usernames: 3-16 characters, no spaces or punctuation.
 const NAME_RE = /^[A-Za-z0-9_]{3,16}$/;
@@ -100,4 +108,85 @@ export async function approveRequest(name) {
   request.command = command;
   request.services = services;
   return { request, command, services };
+}
+
+// ── The servers' real whitelists ────────────────────────────────────────
+// Standard Minecraft format: an array of { uuid, name } entries. Some servers
+// have historically written bare UUID strings, so those are accepted too and
+// reported with a null name.
+function normalizeEntry(entry) {
+  if (typeof entry === 'string') return entry ? { uuid: entry, name: null } : null;
+  if (!entry || typeof entry !== 'object') return null;
+  const uuid = typeof entry.uuid === 'string' ? entry.uuid : '';
+  const name = typeof entry.name === 'string' && entry.name ? entry.name : null;
+  return uuid || name ? { uuid, name } : null;
+}
+
+function whitelistPath(index) {
+  return join(config.services[index].cwd, 'whitelist.json');
+}
+
+async function readWhitelist(index) {
+  try {
+    const parsed = JSON.parse(await catAsRoot(whitelistPath(index)));
+    if (!Array.isArray(parsed)) return { players: [], error: 'whitelist.json is not a JSON array.' };
+    return { players: parsed.map(normalizeEntry).filter(Boolean), error: null };
+  } catch (err) {
+    // A missing file is the normal state for a server nobody has approved yet,
+    // so it is not an error. Anything else is reported rather than swallowed,
+    // because silently reading it as "not whitelisted" would be a wrong answer.
+    const message = err.stderr || err.message;
+    return { players: [], error: /No such file/.test(message) ? null : message };
+  }
+}
+
+// One service's whitelist. `exists` distinguishes "the server has never had a
+// whitelist" (Velocity, or a server nobody has approved yet) from "the whitelist
+// is genuinely empty", which are very different things to an admin.
+export async function listWhitelistedPlayers(index) {
+  const path = whitelistPath(index);
+  const [{ players, error }, exists] = await Promise.all([
+    readWhitelist(index),
+    existsAsRoot(path),
+  ]);
+  return { path, exists, count: players.length, players, error };
+}
+
+export async function checkPlayerOnService(index, name) {
+  const { players, exists, error } = await listWhitelistedPlayers(index);
+  const needle = String(name).toLowerCase();
+  const entry = players.find((player) => (player.name ?? '').toLowerCase() === needle) ?? null;
+  return { name: config.services[index].name, exists, error, whitelisted: entry !== null, entry };
+}
+
+// The same username across every service, which is the question that actually
+// matters: a player has to be whitelisted everywhere to be able to join.
+// Services with no whitelist.json (Velocity delegates to a plugin) are reported
+// but excluded from the verdict, so they cannot make it permanently false.
+export async function checkPlayerEverywhere(name) {
+  const services = await Promise.all(
+    config.services.map((service, index) => checkPlayerOnService(index, name)),
+  );
+  const checked = services.filter((service) => service.exists && !service.error);
+  return {
+    player: name,
+    services,
+    checkedServices: checked.map((service) => service.name),
+    whitelistedEverywhere: checked.length > 0 && checked.every((service) => service.whitelisted),
+  };
+}
+
+// Every service's whitelist plus the union of names, for a network-wide view.
+export async function listWhitelistEverywhere() {
+  const services = await Promise.all(
+    config.services.map(async (service, index) => ({
+      name: service.name,
+      ...(await listWhitelistedPlayers(index)),
+    })),
+  );
+  const names = new Set();
+  for (const service of services) {
+    for (const player of service.players) if (player.name) names.add(player.name);
+  }
+  return { services, players: [...names].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase())) };
 }

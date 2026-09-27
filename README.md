@@ -256,12 +256,17 @@ integrations. It reuses the same tmux and file operations as the Discord
 controls, so behaviour matches.
 
 ```sh
-curl -H "x-api-key: $API_TOKEN" http://127.0.0.1:8080/f42/services
+# Public — no key needed.
+curl http://127.0.0.1:8080/f42/services
+
+# Everything else needs the admin key.
+curl -H "x-api-key: $API_TOKEN" http://127.0.0.1:8080/f42/health
 ```
 
-Every route needs a token except the public whitelist intake, including
-`GET /f42/health` — an uptime monitor should hold `WEBHOOK_TOKEN` if it only
-wants to poll one service's status.
+Six routes are public: the two service status reads and the four whitelist ones
+(see [Authentication](#authentication)). Every other route needs a token,
+`GET /f42/health` included — an uptime monitor should hold `WEBHOOK_TOKEN` if it
+only wants to poll one service's status.
 
 Every response is JSON. Errors are always `{"error": "..."}` with a meaningful
 status code (`400` bad input, `401` missing/bad key, `403` insufficient key,
@@ -282,22 +287,30 @@ start/stop/restart, touch files or cores, or open a WebSocket. It exists so an
 external monitor can check one service without holding an admin key. Sending a
 webhook token to any other route returns `403`.
 
-**The four whitelist routes need no token at all**, so a public page can submit
-a request and poll whether a player is whitelisted yet:
+**Six routes need no token at all**, so a public page can show server status,
+submit a request and poll whether a player is whitelisted yet:
 
 | Route | Purpose |
 |---|---|
+| `GET /f42/services` | Is the network up, and who is on each server? |
+| `GET /f42/services/:name` | One server's status. |
 | `POST /f42/whitelist/request` | Queue a whitelist request. |
 | `GET /f42/whitelist?player=Notch` | Is this player whitelisted, per service? |
 | `GET /f42/whitelist` | Every service's whitelist, plus the union of names. |
 | `GET /f42/services/:name/whitelist` | One server's whitelist. |
 
-They are rate limited instead, and `GET /f42/whitelist/requests`,
+The four whitelist reads are rate limited instead, and `GET /f42/whitelist/requests`,
 `POST /f42/whitelist/approve` and `POST /f42/whitelist/deny` still need
 `API_TOKEN` — the queue, its contact details and the IP each request came from
 are never public. Note that the bare `GET /f42/whitelist` publishes the full
-player roster to anyone; `?player=` is the one that only reveals a name the
-caller already knows. See [Whitelist](#whitelist).
+player roster to anyone, and that service status includes who is currently
+online; `?player=` is the lookup that only reveals a name the caller already
+knows. See [Whitelist](#whitelist).
+
+The list of public routes is one function, `isPublicRequest` in `src/api.js`,
+sitting directly under the auth gate so the whole unauthenticated surface is
+readable in one screen. Everything else under `/f42/services/:name` stays keyed
+on purpose — see [Security](#security-and-hardening).
 
 WebSocket upgrades cannot carry custom headers from a browser, so they also
 accept the admin key as a `?token=` query parameter.
@@ -309,7 +322,7 @@ Only the whitelist routes are rate limited, on two separate budgets:
 | Routes | Default | Env var |
 |---|---|---|
 | `POST /f42/whitelist/request` | 5 per IP per hour | `WHITELIST_REQUESTS_PER_HOUR` |
-| The three public whitelist GETs | 60 per IP per minute | `WHITELIST_READS_PER_MINUTE` (0 disables) |
+| The four public whitelist GETs | 60 per IP per minute | `WHITELIST_READS_PER_MINUTE` (0 disables) |
 
 The POST is tight because it writes to the queue. The GETs are loose because
 they only read and polling them is the intended use; the limit exists to stop a
@@ -329,9 +342,8 @@ Everything else is protected by holding `API_TOKEN`.
 
 ### Endpoint reference
 
-Everything below needs `API_TOKEN` on `x-api-key`; the whitelist table is the
-only one that spells out its auth, because it is the only group with a public
-route. A `WEBHOOK_TOKEN` gets `403` on all of them.
+Everything below needs `API_TOKEN` on `x-api-key` unless the row says
+**none**. A `WEBHOOK_TOKEN` gets `403` on all of them.
 
 #### General
 
@@ -357,20 +369,28 @@ per minute for the GETs, so a page can poll them. The rest need `API_TOKEN`.
 
 #### Services
 
-| Method | Route | Description |
-|---|---|---|
-| `GET` | `/f42/services` | List every service: running state, port, log path, online players. |
-| `GET` | `/f42/services/:name` | Single-service status. The only route a `WEBHOOK_TOKEN` may call. |
-| `GET` | `/f42/services/:name/console?lines=200` | Last N console lines (default 500). |
-| `POST` | `/f42/services/:name/console` | Send a console command, body `{ "command": "list" }`. |
-| `POST` | `/f42/services/:name/start` | Create the tmux session and launch the server. |
-| `POST` | `/f42/services/:name/stop` | Graceful stop, force-kill after 60s. |
-| `POST` | `/f42/services/:name/restart` | Stop then start. |
-| `GET` | `/f42/services/:name/banned-players` | Ban list entries. |
-| `POST` | `/f42/services/:name/banned-players` | Ban a player, body `{ "name": "Player", "reason?": "..." }`. |
-| `DELETE` | `/f42/services/:name/banned-players/:player` | Unban. |
+| Method | Route | Auth | Description |
+|---|---|---|---|
+| `GET` | `/f42/services` | **none** | List every service: running state, port, log path, online players. |
+| `GET` | `/f42/services/:name` | **none** | Single-service status. A `WEBHOOK_TOKEN` may call this too. |
+| `GET` | `/f42/services/:name/console?lines=200` | admin | Last N console lines (default 500). |
+| `POST` | `/f42/services/:name/console` | admin | Send a console command, body `{ "command": "list" }`. |
+| `POST` | `/f42/services/:name/start` | admin | Create the tmux session and launch the server. |
+| `POST` | `/f42/services/:name/stop` | admin | Graceful stop, force-kill after 60s. |
+| `POST` | `/f42/services/:name/restart` | admin | Stop then start. |
+| `GET` | `/f42/services/:name/banned-players` | admin | Ban list entries. |
+| `POST` | `/f42/services/:name/banned-players` | admin | Ban a player, body `{ "name": "Player", "reason?": "..." }`. |
+| `DELETE` | `/f42/services/:name/banned-players/:player` | admin | Unban. |
+
+Only the two status reads are public. The console and the ban list are not:
+scrollback contains every UUID that has connected, and ban reasons are
+moderation notes, so those stay behind `API_TOKEN`.
 
 #### Files
+
+Everything in this table needs `API_TOKEN`. Mod names and config file contents
+are not status — a Forge or NeoForge config routinely holds database passwords,
+API keys and webhook URLs.
 
 | Method | Route | Description |
 |---|---|---|
@@ -387,6 +407,8 @@ per minute for the GETs, so a page can poll them. The rest need `API_TOKEN`.
 | `POST` | `/f42/services/:name/server.properties` | Patch keys, body `{ "properties": { "max-players": "50" } }`. Backs up first. |
 
 #### Cores
+
+Also `API_TOKEN` only.
 
 | Method | Route | Description |
 |---|---|---|
@@ -954,13 +976,20 @@ removed first, as the official install script does.
 - **Size caps** exist where a flood would hurt: 64 KB request bodies (512 KB for
   config writes), 250 MB uploads, 1 MB config reads, a 1500-line console ring
   buffer and a 1 MB log poll chunk.
-- **The unauthenticated surface is the four whitelist routes.** Three of them
-  read `whitelist.json`, so anyone who can reach the API can read who is
-  whitelisted and every whitelisted player's UUID — including the bare
-  `GET /f42/whitelist`, which returns the whole roster. If that matters for your
-  network, put those behind the reverse proxy rather than exposing the API
-  directly, or drop the bare GET. They reveal no IP addresses, contact details,
-  queue state, or anything about the host itself.
+- **The unauthenticated surface is six routes**: the two service status reads and
+  the four whitelist ones. Three of them read `whitelist.json`, so anyone who can
+  reach the API can read who is whitelisted and every whitelisted player's UUID
+  — including the bare `GET /f42/whitelist`, which returns the whole roster. The
+  status reads additionally publish each server's port, log path, player count
+  and the names of who is online right now. None of it reveals IP addresses,
+  contact details, queue state, credentials or the console. If any of that
+  matters for your network, put those six behind the reverse proxy rather than
+  exposing the API directly, or drop the bare whitelist GET.
+- **The public list is one function.** `isPublicRequest` in `src/api.js`, right
+  under the auth gate. Anything that is not named there is keyed, so widening
+  the public surface is a one-line, reviewable change — and worth a second look,
+  because the routes next to these ones (console scrollback, `config/:file`
+  contents, ban reasons) are exactly the ones that hold secrets.
 - **Logs follow the servers.** Typed commands are not written to `latest.log` by
   default, so command history is not retained server-side.
 

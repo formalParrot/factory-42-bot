@@ -159,23 +159,70 @@ function rejectIfRateLimited(req, res) {
   return true;
 }
 
+// The public surface, in one place so it is reviewable at a glance.
+//
+// Public: submitting a whitelist request, polling whether a player is
+// whitelisted, and reading service status. That is exactly what a public
+// web form or status page needs, and none of it is a secret.
+//
+// Everything else still needs API_TOKEN, including everything else under
+// /f42/services/:name — console scrollback, mods, config file contents,
+// server.properties, cores and ban lists. Those are not status: a config file
+// routinely holds database passwords and API keys, and the console shows every
+// player UUID that connects. Widening this list is a one-line change, but it
+// should be a deliberate one.
+function isPublicRequest(method, parts) {
+  const [resource, name, sub, subSub] = parts;
+  if (method !== 'GET') {
+    // Only one non-GET route is public: the whitelist request intake.
+    return resource === 'whitelist' && name === 'request' && !sub;
+  }
+  if (resource === 'whitelist') {
+    if (name === 'request') return false; // GET on it is a 405, not a read
+    if (name) return false; // requests / approve / deny are admin-only
+    return !sub; // GET /f42/whitelist[?player=]
+  }
+  if (resource === 'services') {
+    if (!name) return !sub; // GET /f42/services
+    if (!sub) return true; // GET /f42/services/:name
+    return sub === 'whitelist' && !subSub; // GET /f42/services/:name/whitelist
+  }
+  return false;
+}
+
 async function handleRequest(req, res, pathname) {
   const parts = pathname.split('/').filter(Boolean);
   const method = req.method;
 
   if (parts[0] !== 'f42') return json(res, 404, { error: 'Not found.' });
 
-  const [resource, name, action] = parts.slice(1);
+  const route = parts.slice(1);
+  const [resource, name, action] = route;
+  const isPublic = isPublicRequest(method, route);
 
-  // ── Whitelist: public ──────────────────────────────────────────────────
-  // These take no key so a public page can post a request and poll whether a
-  // player is whitelisted yet. The POST is rate limited hard because it writes
-  // to the queue; the GETs are limited loosely because they only read, and
-  // polling them is the intended use. Anything else under /f42/whitelist falls
-  // through to the auth check below.
-  if (resource === 'whitelist' && (name === 'request' || !name)) {
+  const fullAuth = authorized(req);
+  const webhookAuth = authorizedByWebhook(req);
+  if (!isPublic && !fullAuth && !webhookAuth) return json(res, 401, { error: 'Unauthorized.' });
+
+  // Webhook tokens are limited to reading a single service's status, nothing else.
+  if (!isPublic && webhookAuth && !fullAuth) {
+    const allowed = resource === 'services' && name && !action && method === 'GET';
+    if (!allowed) return json(res, 403, { error: 'Forbidden.' });
+  }
+
+  if (resource === 'health') {
+    if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
+    return json(res, 200, { ok: true, uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000) });
+  }
+
+  // ── Whitelist ───────────────────────────────────────────────────────────
+  // Reached without a key for the public parts (see isPublicRequest): the
+  // request intake, which writes to the queue and is limited hard, and the two
+  // lookups, which only read and are limited loosely because polling them is
+  // the point.
+  if (resource === 'whitelist') {
     // POST /f42/whitelist/request — queue a request for an admin to action.
-    if (name === 'request') {
+    if (name === 'request' && !action) {
       if (method !== 'POST') return json(res, 405, { error: 'Method not allowed.' });
       const key = clientKey(req);
       const limit = whitelistLimiter.check(key);
@@ -213,45 +260,17 @@ async function handleRequest(req, res, pathname) {
     // GET /f42/whitelist?player=Notch — where a player stands, per service,
     // read from each server's own whitelist.json. Without ?player it is the
     // network-wide view instead.
-    if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
-    if (rejectIfRateLimited(req, res)) return;
-    const player = (new URL(req.url, 'http://localhost').searchParams.get('player') || '').trim();
-    if (!player) return json(res, 200, await listWhitelistEverywhere());
-    if (!isValidPlayerName(player)) {
-      return json(res, 400, { error: 'Name must be 3-16 characters of letters, digits or underscore.' });
+    if (!name && !action) {
+      if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
+      if (rejectIfRateLimited(req, res)) return;
+      const player = (new URL(req.url, 'http://localhost').searchParams.get('player') || '').trim();
+      if (!player) return json(res, 200, await listWhitelistEverywhere());
+      if (!isValidPlayerName(player)) {
+        return json(res, 400, { error: 'Name must be 3-16 characters of letters, digits or underscore.' });
+      }
+      return json(res, 200, await checkPlayerEverywhere(player));
     }
-    return json(res, 200, await checkPlayerEverywhere(player));
-  }
 
-  // GET /f42/services/:name/whitelist — one server's whitelist, public for the
-  // same reason as /f42/whitelist, and rate limited by the same bucket.
-  if (resource === 'services' && name && parts[3] === 'whitelist' && !parts[4] && method === 'GET') {
-    if (rejectIfRateLimited(req, res)) return;
-    return resolveServiceOr(res, name, async (index) => {
-      const result = await listWhitelistedPlayers(index);
-      return json(res, 200, { name: config.services[index].name, ...result });
-    });
-  }
-
-  const fullAuth = authorized(req);
-  const webhookAuth = authorizedByWebhook(req);
-  if (!fullAuth && !webhookAuth) return json(res, 401, { error: 'Unauthorized.' });
-
-  // Webhook tokens are limited to reading a single service's status, nothing else.
-  if (webhookAuth && !fullAuth) {
-    const allowed = resource === 'services' && name && !action && method === 'GET';
-    if (!allowed) return json(res, 403, { error: 'Forbidden.' });
-  }
-
-  if (resource === 'health') {
-    if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
-    return json(res, 200, { ok: true, uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000) });
-  }
-
-  // ── Whitelist: admin ────────────────────────────────────────────────────
-  // The public request intake and lookups are handled above, before the auth
-  // gate; what remains is the queue and the approvals.
-  if (resource === 'whitelist') {
     if (name === 'requests' && !action) {
       if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
       const status = (new URL(req.url, 'http://localhost').searchParams.get('status') || '')
@@ -605,6 +624,18 @@ async function handleRequest(req, res, pathname) {
         });
       }
       return json(res, 405, { error: 'Method not allowed.' });
+    });
+  }
+
+  // ── Whitelisted players ─────────────────────────────────────────────────
+  // The server's own whitelist.json. Public like /f42/whitelist, and drawn from
+  // the same rate-limit bucket.
+  if (resource === 'services' && name && action === 'whitelist' && !parts[4]) {
+    if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
+    if (rejectIfRateLimited(req, res)) return;
+    return resolveServiceOr(res, name, async (index) => {
+      const result = await listWhitelistedPlayers(index);
+      return json(res, 200, { name: config.services[index].name, ...result });
     });
   }
 

@@ -12,10 +12,22 @@
 //     admin can see who is actually able to join rather than who merely asked.
 //     Velocity has no such file — it delegates whitelisting to a plugin — so
 //     those reads report `exists: false` rather than pretending it is empty.
+//
+// A service opts out of the whole feature with `"whitelist": false` in
+// config.json. Skipped services are never read from disk and never sent the
+// `whitelist add` command, and every response says so explicitly with
+// `skipped: true`, so a caller can tell "not whitelisted" from "we don't check
+// there" instead of guessing.
 import { join } from 'node:path';
 import config from './config.js';
 import { sendConsole, sessionExists } from './tmux.js';
 import { catAsRoot, existsAsRoot } from './root.js';
+
+// Strict false comparison, so a typo like "whitelist": "no" cannot accidentally
+// look like an opt-out; config.js rejects non-booleans at load time.
+function isWhitelistEnabled(index) {
+  return config.services[index].whitelist !== false;
+}
 
 // Minecraft usernames: 3-16 characters, no spaces or punctuation.
 const NAME_RE = /^[A-Za-z0-9_]{3,16}$/;
@@ -82,24 +94,28 @@ export function denyRequest(name) {
   return request;
 }
 
-// Runs the whitelist command on every service and reports each one separately,
-// so the caller can see which consoles took the command and which did not.
-// Re-approving is allowed: it simply runs the command again.
+// Runs the whitelist command on every service that actually maintains a
+// whitelist, and reports each one separately, so the caller can see which
+// consoles took the command and which did not. Re-approving is allowed: it
+// simply runs the command again.
 export async function approveRequest(name) {
   const request = requests.get(key(name));
   if (!request) return null;
   const command = `whitelist add ${request.name}`;
   const services = await Promise.all(
-    config.services.map(async (service) => {
+    config.services.map(async (service, index) => {
+      if (!isWhitelistEnabled(index)) {
+        return { name: service.name, running: null, sent: false, skipped: true, error: null };
+      }
       const running = await sessionExists(service.tmuxSession);
       if (!running) {
-        return { name: service.name, running: false, sent: false, error: 'Service is not running.' };
+        return { name: service.name, running: false, sent: false, skipped: false, error: 'Service is not running.' };
       }
       try {
         await sendConsole(service.tmuxSession, command);
-        return { name: service.name, running: true, sent: true, error: null };
+        return { name: service.name, running: true, sent: true, skipped: false, error: null };
       } catch (err) {
-        return { name: service.name, running: true, sent: false, error: err.message };
+        return { name: service.name, running: true, sent: false, skipped: false, error: err.message };
       }
     }),
   );
@@ -141,33 +157,37 @@ async function readWhitelist(index) {
 }
 
 // One service's whitelist. `exists` distinguishes "the server has never had a
-// whitelist" (Velocity, or a server nobody has approved yet) from "the whitelist
-// is genuinely empty", which are very different things to an admin.
+// whitelist" from "the whitelist is genuinely empty", which are very different
+// things to an admin. `skipped` marks a service that opted out via config.
 export async function listWhitelistedPlayers(index) {
   const path = whitelistPath(index);
+  if (!isWhitelistEnabled(index)) {
+    return { path, skipped: true, exists: false, count: 0, players: [], error: null };
+  }
   const [{ players, error }, exists] = await Promise.all([
     readWhitelist(index),
     existsAsRoot(path),
   ]);
-  return { path, exists, count: players.length, players, error };
+  return { path, skipped: false, exists, count: players.length, players, error };
 }
 
 export async function checkPlayerOnService(index, name) {
-  const { players, exists, error } = await listWhitelistedPlayers(index);
+  const { players, exists, error, skipped } = await listWhitelistedPlayers(index);
   const needle = String(name).toLowerCase();
   const entry = players.find((player) => (player.name ?? '').toLowerCase() === needle) ?? null;
-  return { name: config.services[index].name, exists, error, whitelisted: entry !== null, entry };
+  return { name: config.services[index].name, skipped, exists, error, whitelisted: entry !== null, entry };
 }
 
 // The same username across every service, which is the question that actually
 // matters: a player has to be whitelisted everywhere to be able to join.
-// Services with no whitelist.json (Velocity delegates to a plugin) are reported
-// but excluded from the verdict, so they cannot make it permanently false.
+// Services that opted out, and services with no whitelist.json (Velocity
+// delegates to a plugin), are reported but excluded from the verdict so they
+// cannot make it permanently false.
 export async function checkPlayerEverywhere(name) {
   const services = await Promise.all(
     config.services.map((service, index) => checkPlayerOnService(index, name)),
   );
-  const checked = services.filter((service) => service.exists && !service.error);
+  const checked = services.filter((service) => !service.skipped && service.exists && !service.error);
   return {
     player: name,
     services,

@@ -14,6 +14,7 @@
       "latestLog": "/root/velocity-proxy/logs/latest.log",
       "startCommand": "bash run.sh",
       "stopConsoleCommand": "shutdown",
+      "whitelist": false,
       "ping": { "host": "127.0.0.1", "port": 25565 }
     },
     {

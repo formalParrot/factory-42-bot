@@ -153,6 +153,7 @@ cp .env.example .env
       "startCommand": "bash run.sh",
       "stopConsoleCommand": "stop",
       "core": { "type": "neoforge" },
+      "whitelist": false,
       "ping": { "host": "127.0.0.1", "port": 25566 }
     }
   ]
@@ -179,6 +180,7 @@ Per service:
 | `stopConsoleCommand` | yes | Console command for a graceful shutdown (`stop` for Paper/Vanilla, `shutdown` for Velocity). |
 | `latestLog` | no | Defaults to `<cwd>/logs/latest.log`. |
 | `core` | no | `{ "type": "neoforge" }` enables the core endpoints. Add `"mcVersion"` to override the auto-detected Minecraft version. |
+| `whitelist` | no | `false` opts the service out of the whitelist entirely — never read, never sent the command. For services with no built-in whitelist, e.g. Velocity. Defaults to `true`. |
 | `ping` | no | `{ "host", "port" }` queried with the Minecraft Server List Ping for an authoritative player count. |
 
 ### 4. Install and run
@@ -487,13 +489,13 @@ Content-Type: application/json
 {
   "command": "whitelist add Playername",
   "services": [
-    { "name": "Survival", "running": true, "sent": true, "error": null },
-    { "name": "Creative", "running": true, "sent": true, "error": null },
-    { "name": "Lobby", "running": true, "sent": true, "error": null },
-    { "name": "Velocity", "running": true, "sent": true, "error": null }
+    { "name": "Survival", "running": true, "sent": true, "skipped": false, "error": null },
+    { "name": "Creative", "running": true, "sent": true, "skipped": false, "error": null },
+    { "name": "Lobby", "running": true, "sent": true, "skipped": false, "error": null },
+    { "name": "Velocity", "running": null, "sent": false, "skipped": true, "error": null }
   ],
   "request": { "name": "Playername", "status": "approved", "decidedAt": "2026-09-27T10:20:00.000Z", "...": "..." },
-  "note": "Ran \"whitelist add Playername\" on every service."
+  "note": "Ran \"whitelist add Playername\" on every whitelisting service. Skipped Velocity (\"whitelist\": false)."
 }
 ```
 
@@ -502,13 +504,19 @@ stuck session never blocks the rest. A service that is not running is reported
 with `sent: false` and an `error`; it is **not** started for you — approve again
 after it is up, which is safe because the command is idempotent.
 
-> **Velocity has no built-in `whitelist` command.** Its console will report an
-> unknown command while still showing `sent: true`, because sending a console
-> command is fire-and-forget: the API confirms the keystrokes reached the
-> console, not that the server understood them. If you whitelist at the proxy
-> too, install a whitelist plugin there — the backends are handled for you.
-> Check `GET /f42/services/Velocity/console` to read what a service actually
-> said.
+Services with `"whitelist": false` in `config.json` are skipped here too, so
+Velocity never gets a command it cannot answer. They are reported with
+`"skipped": true` and left out of the `note` counts rather than counted as
+failures.
+
+> **Velocity has no built-in `whitelist` command**, which is why the shipped
+> `config.json` sets `"whitelist": false` on it — with that set, approvals skip
+> the proxy entirely instead of typing a command it will reject as unknown. If
+> you *do* run a whitelist plugin on Velocity and want the bot to keep the proxy
+> in sync, remove the opt-out; the plugin's command should be the same. Sending a
+> console command is fire-and-forget, so `sent: true` confirms the keystrokes
+> reached the console, not that the server understood them — check
+> `GET /f42/services/Velocity/console` to read what a service actually said.
 
 #### 4. An admin denies
 
@@ -544,10 +552,10 @@ GET /f42/whitelist?player=Notch
 {
   "player": "Notch",
   "services": [
-    { "name": "Survival", "exists": true, "error": null, "whitelisted": true, "entry": { "uuid": "069a79f4-44e9-4726-a5be-fca90e38aaf5", "name": "Notch" } },
-    { "name": "Creative", "exists": true, "error": null, "whitelisted": false, "entry": null },
-    { "name": "Lobby", "exists": true, "error": null, "whitelisted": true, "entry": { "uuid": "069a79f4-44e9-4726-a5be-fca90e38aaf5", "name": "Notch" } },
-    { "name": "Velocity", "exists": false, "error": null, "whitelisted": false, "entry": null }
+    { "name": "Survival", "skipped": false, "exists": true, "error": null, "whitelisted": true, "entry": { "uuid": "069a79f4-44e9-4726-a5be-fca90e38aaf5", "name": "Notch" } },
+    { "name": "Creative", "skipped": false, "exists": true, "error": null, "whitelisted": false, "entry": null },
+    { "name": "Lobby", "skipped": false, "exists": true, "error": null, "whitelisted": true, "entry": { "uuid": "069a79f4-44e9-4726-a5be-fca90e38aaf5", "name": "Notch" } },
+    { "name": "Velocity", "skipped": true, "exists": false, "error": null, "whitelisted": false, "entry": null }
   ],
   "checkedServices": ["Survival", "Creative", "Lobby"],
   "whitelistedEverywhere": false
@@ -555,11 +563,18 @@ GET /f42/whitelist?player=Notch
 ```
 
 `whitelistedEverywhere` is the headline answer: `true` only when the player is on
-every service that maintains a `whitelist.json`. Services reporting
-`"exists": false` are excluded from that verdict, because a service with no
-whitelist file (Velocity delegates to a plugin) would otherwise make the answer
-permanently `false`. `checkedServices` names exactly which services the verdict
-was based on.
+every service that actually maintains a whitelist. `checkedServices` names
+exactly which services that verdict was based on, and the two ways a service can
+be left out of it are both explicit:
+
+| Case | Reported as | Counted in the verdict |
+|---|---|---|
+| `"whitelist": false` in `config.json` | `"skipped": true` | No — you told the bot not to look there. |
+| No `whitelist.json` on disk | `"exists": false` | No — nothing to check. |
+
+Velocity is normally the first case, which is why the shipped `config.json` sets
+`"whitelist": false` on it. Without that opt-out, a service that cannot answer
+would otherwise drag `whitelistedEverywhere` down to a permanent `false`.
 
 Per-service, without the cross-network verdict:
 
@@ -571,6 +586,7 @@ GET /f42/services/Survival/whitelist
 {
   "name": "Survival",
   "path": "/root/server/whitelist.json",
+  "skipped": false,
   "exists": true,
   "count": 2,
   "players": [
@@ -589,7 +605,7 @@ GET /f42/whitelist
 
 ```json
 {
-  "services": [ { "name": "Survival", "path": "...", "exists": true, "count": 2, "players": [], "error": null } ],
+  "services": [ { "name": "Survival", "path": "...", "skipped": false, "exists": true, "count": 2, "players": [], "error": null } ],
   "players": ["jeb_", "Notch"]
 }
 ```
@@ -602,10 +618,16 @@ reveals a name the caller already knows, so prefer it for anything user-facing.
 
 Reading the files:
 
-- **`exists`** is `false` when the service has no `whitelist.json` at all. That is
-  the normal state for a server nobody has approved yet, and for Velocity, which
-  has no such file unless a plugin creates one. It is deliberately *not* reported
-  as an empty whitelist.
+- **`skipped`** is `true` when the service opted out via `"whitelist": false` in
+  `config.json`. Its file is not even touched and the other fields are not
+  meaningful. This is the switch to flip for Velocity, or for any service whose
+  whitelist lives somewhere the bot should not be poking at.
+- **`exists`** is `false` when an opted-in service has no `whitelist.json` yet,
+  which is the normal state before anyone has been approved. It is deliberately
+  *not* reported as an empty whitelist.
+- **`whitelist` has to be a real boolean.** `config.json` is rejected at startup
+  if the field is anything else, so `"whitelist": "false"` cannot quietly pass
+  for an opt-out.
 - **`error`** carries a message when the file exists but could not be read or
   parsed, so a broken file is never silently reported as "not whitelisted".
 - **Entries with `"name": null`** are players the server recorded by UUID only.

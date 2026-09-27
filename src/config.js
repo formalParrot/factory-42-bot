@@ -16,6 +16,13 @@ for (const service of config.services) {
       `Unknown core type "${service.core.type}" for service "${service.name}". Supported: ${SUPPORTED_CORES.join(', ')}.`,
     );
   }
+  // Boolean only, so "whitelist": "false" cannot pass for an opt-out — the
+  // whitelist code compares against boolean false specifically.
+  if ('whitelist' in service && typeof service.whitelist !== 'boolean') {
+    throw new Error(
+      `Service "${service.name}" has a non-boolean "whitelist" (${JSON.stringify(service.whitelist)}). Use true or false.`,
+    );
+  }
 }
 
 export default config;

@@ -295,15 +295,17 @@ async function handleRequest(req, res, pathname) {
       if (!result) {
         return json(res, 404, { error: `No whitelist request found for "${playerName}".` });
       }
-      const failed = result.services.filter((service) => !service.sent);
+      const skipped = result.services.filter((service) => service.skipped);
+      const failed = result.services.filter((service) => !service.sent && !service.skipped);
+      const skippedNote = skipped.length > 0 ? ` Skipped ${skipped.map((s) => s.name).join(', ')} ("whitelist": false).` : '';
       return json(res, 200, {
         command: result.command,
         services: result.services,
         request: result.request,
         note:
-          failed.length === 0
-            ? `Ran "${result.command}" on every service.`
-            : `Ran "${result.command}" on ${result.services.length - failed.length}/${result.services.length} services; check the console of the others.`,
+          (failed.length === 0
+            ? `Ran "${result.command}" on every whitelisting service.`
+            : `Ran "${result.command}" on ${result.services.length - failed.length - skipped.length}/${result.services.length - skipped.length} services; check the console of the others.`) + skippedNote,
       });
     }
 

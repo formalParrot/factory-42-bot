@@ -20,10 +20,19 @@ import { entriesToObject, parseProperties, serializeProperties, setEntry } from 
 import { coreBusy, coreConfigured, getCoreStatus, listAllVersions, updateCore } from './cores.js';
 import { listBannedPlayers, addBannedPlayer, removeBannedPlayer } from './bans.js';
 import { attachRootShell } from './shell.js';
+import { createRateLimiter } from './rateLimit.js';
+import {
+  approveRequest,
+  createRequest,
+  denyRequest,
+  isValidPlayerName,
+  listRequests,
+} from './whitelist.js';
 
 // Authenticated HTTP + WebSocket API exposing each service's console via its
 // logs/latest.log. All routes are under /f42. Sending commands reuses the same
-// tmux path the Discord controls use.
+// tmux path the Discord controls use. The single exception is the public
+// whitelist request intake, which is unauthenticated and rate limited instead.
 
 const HOST = process.env.API_HOST || '127.0.0.1';
 const PORT = Number(process.env.API_PORT || 8080);
@@ -31,6 +40,11 @@ const TOKEN = process.env.API_TOKEN;
 const AUTH_HEADER = (process.env.API_HEADER || 'x-api-key').toLowerCase();
 const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN;
 const WEBHOOK_HEADER = (process.env.WEBHOOK_HEADER || 'x-webhook-token').toLowerCase();
+const TRUST_PROXY = /^(1|true|yes)$/i.test(process.env.TRUST_PROXY || '');
+// Clamped so a typo in .env cannot disable the limiter (NaN compares false
+// against every count) or lock the endpoint out entirely.
+const WHITELIST_REQUESTS_PER_HOUR = Math.max(1, Number(process.env.WHITELIST_REQUESTS_PER_HOUR) || 5);
+const WHITELIST_STATUSES = ['pending', 'approved', 'denied'];
 const WS_HISTORY_LINES = 500;
 const MAX_BODY = 64 * 1024;
 const MAX_CONFIG_BODY = 512 * 1024;
@@ -39,6 +53,11 @@ const REPO_DIR = fileURLToPath(new URL('../', import.meta.url));
 const execAsync = promisify(exec);
 
 const startedAt = Date.now();
+
+const whitelistLimiter = createRateLimiter({
+  limit: WHITELIST_REQUESTS_PER_HOUR,
+  windowMs: 60 * 60 * 1000,
+});
 
 function json(res, status, body) {
   const payload = JSON.stringify(body);
@@ -65,6 +84,10 @@ function readBody(req, maxBytes = MAX_BODY) {
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
+}
+
+async function readJson(req, maxBytes = MAX_BODY) {
+  return JSON.parse((await readBody(req, maxBytes)).toString('utf8') || '{}');
 }
 
 function authorized(req) {
@@ -96,17 +119,67 @@ async function runningFor(index) {
   return sessionExists(config.services[index].tmuxSession);
 }
 
+// Rate-limit bucket for the caller. x-forwarded-for is only honoured when
+// TRUST_PROXY is set, because a client can put anything in that header and
+// would otherwise be able to mint an unlimited number of buckets for itself.
+function clientKey(req) {
+  if (TRUST_PROXY) {
+    const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    if (forwarded) return forwarded;
+  }
+  return req.socket.remoteAddress || 'unknown';
+}
+
 async function handleRequest(req, res, pathname) {
   const parts = pathname.split('/').filter(Boolean);
   const method = req.method;
 
   if (parts[0] !== 'f42') return json(res, 404, { error: 'Not found.' });
 
+  const [resource, name, action] = parts.slice(1);
+
+  // ── Whitelist requests: public intake ───────────────────────────────────
+  // The one route that takes no key, so a public web form can post straight to
+  // it. The rate limit is the only gate, so it is checked before the body is
+  // even read and it is deliberately tight.
+  if (resource === 'whitelist' && name === 'request' && !action) {
+    if (method !== 'POST') return json(res, 405, { error: 'Method not allowed.' });
+    const key = clientKey(req);
+    const limit = whitelistLimiter.check(key);
+    if (!limit.allowed) {
+      const retryAfter = Math.ceil(limit.retryAfterMs / 1000);
+      res.setHeader('Retry-After', String(retryAfter));
+      return json(res, 429, {
+        error: `Rate limit exceeded: ${whitelistLimiter.limit} whitelist requests per hour. Try again in ${retryAfter}s.`,
+        retryAfterSeconds: retryAfter,
+      });
+    }
+
+    let body;
+    try {
+      body = await readJson(req);
+    } catch (err) {
+      return json(res, 400, { error: `Could not read JSON body: ${err.message}` });
+    }
+    const playerName = typeof body.name === 'string' ? body.name.trim() : '';
+    if (!playerName) return json(res, 400, { error: 'Missing "name" string in body, e.g. {"name":"Playername"}.' });
+    if (!isValidPlayerName(playerName)) {
+      return json(res, 400, { error: 'Name must be 3-16 characters of letters, digits or underscore.' });
+    }
+
+    const { request, already } = createRequest(playerName, body.contact, key);
+    return json(res, already ? 200 : 202, {
+      status: request.status,
+      name: request.name,
+      requestedAt: request.requestedAt,
+      already,
+      note: 'Request received. An admin still has to approve it before you can join.',
+    });
+  }
+
   const fullAuth = authorized(req);
   const webhookAuth = authorizedByWebhook(req);
   if (!fullAuth && !webhookAuth) return json(res, 401, { error: 'Unauthorized.' });
-
-  const [resource, name, action] = parts.slice(1);
 
   // Webhook tokens are limited to reading a single service's status, nothing else.
   if (webhookAuth && !fullAuth) {
@@ -117,6 +190,66 @@ async function handleRequest(req, res, pathname) {
   if (resource === 'health') {
     if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
     return json(res, 200, { ok: true, uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000) });
+  }
+
+  // ── Whitelist requests: admin queue ─────────────────────────────────────
+  if (resource === 'whitelist') {
+    if (name === 'requests' && !action) {
+      if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
+      const status = (new URL(req.url, 'http://localhost').searchParams.get('status') || '')
+        .trim()
+        .toLowerCase();
+      if (status && !WHITELIST_STATUSES.includes(status)) {
+        return json(res, 400, { error: `Unknown status "${status}". Use one of: ${WHITELIST_STATUSES.join(', ')}.` });
+      }
+      return json(res, 200, {
+        requests: listRequests(status),
+        rateLimit: { requestsPerHour: whitelistLimiter.limit },
+      });
+    }
+
+    // Approve and deny both take the player name in the body rather than the
+    // path so the caller never has to URL-encode a username.
+    if ((name === 'approve' || name === 'deny') && !action) {
+      if (method !== 'POST') return json(res, 405, { error: 'Method not allowed.' });
+
+      let body;
+      try {
+        body = await readJson(req);
+      } catch (err) {
+        return json(res, 400, { error: `Could not read JSON body: ${err.message}` });
+      }
+      const playerName = typeof body.name === 'string' ? body.name.trim() : '';
+      if (!playerName) return json(res, 400, { error: 'Missing "name" string in body, e.g. {"name":"Playername"}.' });
+      if (!isValidPlayerName(playerName)) {
+        return json(res, 400, { error: 'Name must be 3-16 characters of letters, digits or underscore.' });
+      }
+
+      if (name === 'deny') {
+        const request = denyRequest(playerName);
+        if (!request) {
+          return json(res, 404, { error: `No whitelist request found for "${playerName}".` });
+        }
+        return json(res, 200, { request });
+      }
+
+      const result = await approveRequest(playerName);
+      if (!result) {
+        return json(res, 404, { error: `No whitelist request found for "${playerName}".` });
+      }
+      const failed = result.services.filter((service) => !service.sent);
+      return json(res, 200, {
+        command: result.command,
+        services: result.services,
+        request: result.request,
+        note:
+          failed.length === 0
+            ? `Ran "${result.command}" on every service.`
+            : `Ran "${result.command}" on ${result.services.length - failed.length}/${result.services.length} services; check the console of the others.`,
+      });
+    }
+
+    return json(res, 404, { error: 'Not found.' });
   }
 
   if (resource === 'refresh' && method === 'POST') {

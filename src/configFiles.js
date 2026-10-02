@@ -18,6 +18,9 @@ import {
 const MAX_READ_BYTES = 1024 * 1024; // 1 MB
 const MAX_LIST_DEPTH = 8; // subdirectories walked when `recursive` is set
 const MAX_LIST_ENTRIES = 5000;
+// A config tree is mostly noise — assets, locale dumps, jars, world databases —
+// so a listing only reports the two formats the config editor can round-trip.
+const DEFAULT_EXTENSIONS = ['toml', 'json'];
 
 export const configDir = (cwd) => `${cwd}/config`;
 
@@ -44,19 +47,33 @@ function entryName(rel, subdir) {
   return subdir ? `${subdir}/${rel}` : rel;
 }
 
+function fileExtension(rel) {
+  return rel.split('.').pop().toLowerCase();
+}
+
+// Accepts an array or a `?extensions=a,b` string. Returns the extensions to
+// match, or null when the filter is off (`all`, `*`, or an empty list), which is
+// the only mode that reports directories.
+function normalizeExtensions(extensions) {
+  const list = typeof extensions === 'string' ? extensions.split(',') : (extensions ?? DEFAULT_EXTENSIONS);
+  const wanted = list.map((e) => String(e).trim().toLowerCase().replace(/^\./, '')).filter(Boolean);
+  return wanted.length && !wanted.includes('all') && !wanted.includes('*') ? wanted : null;
+}
+
 async function statOrNull(path) {
   return statAsRoot(path).catch(() => null);
 }
 
 // Lists a directory inside <cwd>/config. `subdir` selects which one and
 // `recursive` (on by default) walks every directory below it, so a mod's
-// `config/<mod>/` files show up without a second request. `extensions` narrows
-// the files (directories are always listed); `maxDepth` bounds the walk.
+// `config/<mod>/` files show up without a second request. `extensions` (default
+// `.toml` and `.json`) narrows the files, and with a filter in place only the
+// directories that hold a matching file come back; `maxDepth` bounds the walk.
 // Entry `name` is always relative to <cwd>/config, so it can be handed straight
 // back as a request path.
 export async function listConfigFiles(
   cwd,
-  { subdir = '', recursive = true, maxDepth = 0, extensions = [] } = {},
+  { subdir = '', recursive = true, maxDepth = 0, extensions = DEFAULT_EXTENSIONS } = {},
 ) {
   const rel = subdir ? validateConfigPath(subdir) : '';
   if (subdir && !rel) return { error: `Invalid config directory path: ${subdir}` };
@@ -68,31 +85,41 @@ export async function listConfigFiles(
   }
   if (!stat.isDir) return { error: `Config path "${rel}" is a file, not a directory.` };
 
-  const wanted = extensions.map((e) => e.toLowerCase().replace(/^\./, '')).filter(Boolean);
+  const wanted = normalizeExtensions(extensions);
   const depth = recursive ? (maxDepth > 0 ? Math.min(Math.floor(maxDepth), MAX_LIST_DEPTH) : MAX_LIST_DEPTH) : 1;
 
   let entries;
   if (recursive) {
     const found = await findAsRoot(dir, { maxDepth: depth });
-    entries = found
-      .filter((e) => e.isDir || !wanted.length || wanted.includes(e.rel.split('.').pop().toLowerCase()))
-      .map((e) => ({
-        name: entryName(e.rel, rel),
-        isDir: e.isDir,
-        size: e.isDir ? 0 : e.size,
-        modified: e.mtime,
-        depth: e.rel.split('/').length - 1,
-      }));
+    let keep = found;
+    if (wanted) {
+      // Keep a directory only when a matching file sits somewhere below it, so
+      // the result stays a navigable path to real configs and nothing else.
+      const files = found.filter((e) => !e.isDir && wanted.includes(fileExtension(e.rel)));
+      const dirs = found.filter((e) => e.isDir && files.some((f) => f.rel.startsWith(`${e.rel}/`)));
+      keep = [...dirs, ...files];
+    }
+    entries = keep.map((e) => ({
+      name: entryName(e.rel, rel),
+      isDir: e.isDir,
+      size: e.isDir ? 0 : e.size,
+      modified: e.mtime,
+      depth: e.rel.split('/').length - 1,
+    }));
   } else {
     const names = await listAsRoot(dir);
-    entries = await Promise.all(
-      names.map(async (name) => {
-        const s = await statOrNull(`${dir}/${name}`);
-        return s
-          ? { name: entryName(name, rel), isDir: s.isDir, size: s.isDir ? 0 : s.size, modified: s.mtime, depth: 0 }
-          : { name: entryName(name, rel), isDir: false, size: 0, modified: null, depth: 0 };
-      }),
-    );
+    const stats = await Promise.all(names.map(async (name) => ({ name, stat: await statOrNull(`${dir}/${name}`) })));
+    entries = stats
+      // Directories stay in a single-level listing so it can be walked by hand;
+      // which files they hold is only known once the tree is walked.
+      .filter(({ name, stat: s }) => (s && s.isDir) || (wanted && wanted.includes(fileExtension(name))))
+      .map(({ name, stat: s }) => ({
+        name: entryName(name, rel),
+        isDir: s ? s.isDir : false,
+        size: s && !s.isDir ? s.size : 0,
+        modified: s ? s.mtime : null,
+        depth: 0,
+      }));
   }
 
   const truncated = entries.length > MAX_LIST_ENTRIES;
@@ -100,6 +127,7 @@ export async function listConfigFiles(
     path: dir,
     subdir: rel,
     recursive,
+    extensions: wanted ?? [],
     exists: true,
     depth,
     count: Math.min(entries.length, MAX_LIST_ENTRIES),

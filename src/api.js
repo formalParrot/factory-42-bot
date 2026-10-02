@@ -533,7 +533,9 @@ async function handleRequest(req, res, pathname) {
   //
   // <file> may be a subdirectory path (`jei/world/client.toml`), which is also
   // what a listing returns in `name`. Listing is recursive by default so a mod's
-  // config/<mod>/ files come back without walking the tree by hand.
+  // config/<mod>/ files come back without walking the tree by hand, and it only
+  // reports .toml/.json plus the directories holding them, so the tree stays
+  // about configs rather than locale dumps, jars and world databases.
   if (resource === 'services' && name && parts[3] === 'config') {
     const filePath = parts[4] ? decodeURIComponent(parts.slice(4).join('/')) : '';
     const query = new URL(req.url, 'http://localhost').searchParams;
@@ -552,7 +554,7 @@ async function handleRequest(req, res, pathname) {
           subdir: query.get('dir') || '',
           recursive: flag('recursive', true),
           maxDepth: Number(query.get('maxDepth') || 0) || 0,
-          extensions: (query.get('extensions') || '').split(','),
+          extensions: query.get('extensions') ?? undefined,
         });
         if (result.error) {
           return json(res, 400, { name: config.services[index].name, error: result.error });

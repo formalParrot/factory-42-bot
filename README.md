@@ -399,7 +399,7 @@ API keys and webhook URLs.
 | `DELETE` | `/f42/services/:name/files/:file` | Delete a mod. |
 | `POST` | `/f42/services/:name/files/:file/disable` | Rename `Foo.jar` → `Foo.jar.dis`. |
 | `POST` | `/f42/services/:name/files/:file/enable` | Rename `Foo.jar.dis` → `Foo.jar`. |
-| `GET` | `/f42/services/:name/config` | List `<cwd>/config`, recursively. Takes `?dir=`, `?recursive=0`, `?maxDepth=`, `?extensions=`. |
+| `GET` | `/f42/services/:name/config` | List `<cwd>/config` recursively, `.toml`/`.json` only. Takes `?dir=`, `?recursive=0`, `?maxDepth=`, `?extensions=`. |
 | `GET` | `/f42/services/:name/config/:file` | Read a config file (1 MB cap). `?view=raw` skips the reformatted copy. |
 | `POST` | `/f42/services/:name/config/:file` | Create/overwrite, body `{ "content": "..." }`. Backs up first. |
 | `DELETE` | `/f42/services/:name/config/:file` | Delete a config file. |
@@ -842,16 +842,19 @@ are supported (`config/jei/something.toml`) and are validated against path
 traversal.
 
 Listing walks the whole tree, so `config/<mod>/` files come back without a second
-request. `name` is always relative to `<cwd>/config`, so any entry can be handed
-straight back as a request path, and `depth` says how far below the listed
-directory it sits:
+request. A config directory is mostly *not* config — mods ship assets, locale
+dumps, jars and world databases next to their settings — so a listing reports only
+`.toml` and `.json` files, plus the directories that hold them. `name` is always
+relative to `<cwd>/config`, so any entry can be handed straight back as a request
+path, and `depth` says how far below the listed directory it sits:
 
 ```
-GET /f42/services/:name/config
+GET /f42/services/:name/config                        # .toml + .json, recursively
 GET /f42/services/:name/config?recursive=0            # top level only
 GET /f42/services/:name/config?dir=jei                # start inside a subdirectory
 GET /f42/services/:name/config?maxDepth=2             # stop after 2 levels
-GET /f42/services/:name/config?extensions=toml,json   # files only, by extension
+GET /f42/services/:name/config?extensions=toml,json   # other extensions
+GET /f42/services/:name/config?extensions=all         # everything, directories included
 ```
 
 ```json
@@ -860,6 +863,7 @@ GET /f42/services/:name/config?extensions=toml,json   # files only, by extension
   "path": "/root/server/config",
   "subdir": "",
   "recursive": true,
+  "extensions": ["toml", "json"],
   "exists": true,
   "depth": 8,
   "count": 3,
@@ -872,9 +876,12 @@ GET /f42/services/:name/config?extensions=toml,json   # files only, by extension
 }
 ```
 
-`?extensions` keeps every directory so the tree stays navigable and drops files
-that do not match. At most 5000 entries come back; past that `truncated` is true.
-`?recursive=0`, `?dir=` and `?maxDepth=` are combined freely.
+`?extensions` replaces the default filter (`.toml`/`.json`); `all` turns it off and
+lists every file, which is also the only mode where directories are reported
+regardless of what they hold. With `?recursive=0` only that one level is listed,
+and directories are always kept there so the tree can be walked by hand. At most
+5000 entries come back; past that `truncated` is true. `?recursive=0`, `?dir=` and
+`?maxDepth=` are combined freely.
 
 Reading caps at 1 MB; anything larger returns `"truncated": true` with the first
 1 MB. Alongside the byte-exact `content`, the response carries `format`,

@@ -12,6 +12,7 @@ import { getOnlinePlayers } from './players.js';
 import { listFiles, uploadFiles, deleteFile, disableFile, enableFile } from './files.js';
 import {
   listConfigFiles,
+  patchConfigLines,
   readConfigFile,
   writeConfigFile,
   deleteConfigFile,
@@ -528,6 +529,7 @@ async function handleRequest(req, res, pathname) {
   // ── Config files ────────────────────────────────────────────────────────
   // GET    /f42/services/<name>/config[?dir=&recursive=&maxDepth=&extensions=]
   // GET    /f42/services/<name>/config/<file>[?view=raw]
+  // PUT    /f42/services/<name>/config/<file>     — {startLine, endLine?, content} line edit
   // POST   /f42/services/<name>/config/<file>     — create/overwrite (backs up first)
   // DELETE /f42/services/<name>/config/<file>     — delete a file
   //
@@ -591,6 +593,20 @@ async function handleRequest(req, res, pathname) {
           return json(res, 400, { name: serviceName, error: result.error });
         }
         return json(res, result.created ? 201 : 200, { service: serviceName, ...result });
+      }
+
+      if (method === 'PUT') {
+        let body;
+        try {
+          body = JSON.parse((await readBody(req, MAX_CONFIG_BODY)).toString('utf8') || '{}');
+        } catch (err) {
+          return json(res, 400, { error: err.message });
+        }
+        const result = await patchConfigLines(config.services[index].cwd, filePath, body);
+        if (result.error) {
+          return json(res, result.error.includes('not found') ? 404 : 400, { service: serviceName, error: result.error });
+        }
+        return json(res, 200, { service: serviceName, ...result });
       }
 
       if (method === 'DELETE') {

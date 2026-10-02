@@ -399,8 +399,9 @@ API keys and webhook URLs.
 | `DELETE` | `/f42/services/:name/files/:file` | Delete a mod. |
 | `POST` | `/f42/services/:name/files/:file/disable` | Rename `Foo.jar` → `Foo.jar.dis`. |
 | `POST` | `/f42/services/:name/files/:file/enable` | Rename `Foo.jar.dis` → `Foo.jar`. |
-| `GET` | `/f42/services/:name/config` | List `<cwd>/config` recursively, `.toml`/`.json` only. Takes `?dir=`, `?recursive=0`, `?maxDepth=`, `?extensions=`. |
+| `GET` | `/f42/services/:name/config` | List `<cwd>/config` recursively, `.toml` only. Takes `?dir=`, `?recursive=0`, `?maxDepth=`, `?extensions=`. |
 | `GET` | `/f42/services/:name/config/:file` | Read a config file (1 MB cap). `?view=raw` skips the reformatted copy. |
+| `PUT` | `/f42/services/:name/config/:file` | Edit part of a file by line, body `{ "startLine", "endLine"?, "content" }`. Backs up first. |
 | `POST` | `/f42/services/:name/config/:file` | Create/overwrite, body `{ "content": "..." }`. Backs up first. |
 | `DELETE` | `/f42/services/:name/config/:file` | Delete a config file. |
 | `GET` | `/f42/services/:name/server.properties` | Parsed `server.properties`. |
@@ -844,12 +845,12 @@ traversal.
 Listing walks the whole tree, so `config/<mod>/` files come back without a second
 request. A config directory is mostly *not* config — mods ship assets, locale
 dumps, jars and world databases next to their settings — so a listing reports only
-`.toml` and `.json` files, plus the directories that hold them. `name` is always
+`.toml` files, plus the directories that hold them. `name` is always
 relative to `<cwd>/config`, so any entry can be handed straight back as a request
 path, and `depth` says how far below the listed directory it sits:
 
 ```
-GET /f42/services/:name/config                        # .toml + .json, recursively
+GET /f42/services/:name/config                        # .toml only, recursively
 GET /f42/services/:name/config?recursive=0            # top level only
 GET /f42/services/:name/config?dir=jei                # start inside a subdirectory
 GET /f42/services/:name/config?maxDepth=2             # stop after 2 levels
@@ -876,7 +877,7 @@ GET /f42/services/:name/config?extensions=all         # everything, directories 
 }
 ```
 
-`?extensions` replaces the default filter (`.toml`/`.json`); `all` turns it off and
+`?extensions` replaces the default filter (`.toml`); `all` turns it off and
 lists every file, which is also the only mode where directories are reported
 regardless of what they hold. With `?recursive=0` only that one level is listed,
 and directories are always kept there so the tree can be walked by hand. At most
@@ -917,6 +918,22 @@ so a first write to `config/newmod/client.toml` works. Deleting is
 `DELETE /f42/services/:name/config/:file` with the path URL-encoded.
 Directories cannot be read or deleted, and paths escaping `config/` are rejected
 with a `400`.
+
+To change part of a file without re-sending the whole thing, `PUT` the same path
+with `startLine`/`endLine` (1-based, inclusive) and the `content` that replaces
+them — `""` deletes the lines, and omitting `endLine` replaces one line:
+
+```json
+{ "startLine": 12, "endLine": 14, "content": "[general]\n  foo = true" }
+```
+
+`endLine` one below `startLine` inserts without removing anything, so
+`{ "startLine": 1, "endLine": 0, "content": "# top of file\n" }` prepends and
+`startLine: lineCount + 1` appends. Lines outside the range are copied through
+unchanged, the file is backed up first, and the response reports the new
+`lineCount`, `replacedLines` and `modified`. A range past the end of the file is
+a `400` that names the file's real line count rather than writing something
+wrong.
 
 ### Banned players
 

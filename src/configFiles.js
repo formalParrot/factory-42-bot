@@ -67,7 +67,7 @@ async function statOrNull(path) {
 // Lists a directory inside <cwd>/config. `subdir` selects which one and
 // `recursive` (on by default) walks every directory below it, so a mod's
 // `config/<mod>/` files show up without a second request. `extensions` (default
-// `.toml` and `.json`) narrows the files, and with a filter in place only the
+// `.toml`) narrows the files, and with a filter in place only the
 // directories that hold a matching file come back; `maxDepth` bounds the walk.
 // Entry `name` is always relative to <cwd>/config, so it can be handed straight
 // back as a request path.
@@ -388,6 +388,60 @@ export async function writeConfigFile(cwd, name, content) {
     created: !existing,
     backedUp: Boolean(existing),
     size: Buffer.byteLength(content, 'utf8'),
+  };
+}
+
+// Splices a 1-based inclusive line range out of a config file and writes the
+// result back: `startLine`/`endLine` address the lines to replace and `content`
+// is what takes their place ("" deletes them). `endLine` defaults to `startLine`,
+// and `endLine: startLine - 1` inserts without touching anything. Every line
+// outside the range is copied through unchanged, and the previous file is backed
+// up like any other write.
+export async function patchConfigLines(cwd, name, { startLine, endLine, content = '' }) {
+  const rel = validateConfigPath(name);
+  if (!rel) return { error: `Invalid config file path: ${name}` };
+  if (typeof content !== 'string') return { error: 'Body must contain a "content" string.' };
+
+  const start = Number(startLine);
+  const end = endLine === undefined || endLine === null || endLine === '' ? start : Number(endLine);
+  if (!Number.isInteger(start) || !Number.isInteger(end)) {
+    return { error: 'Body must contain integer "startLine" and "endLine" line numbers.' };
+  }
+
+  const path = `${configDir(cwd)}/${rel}`;
+  const stat = await statOrNull(path);
+  if (!stat) return { error: `Config file "${rel}" not found.` };
+  if (stat.isDir) return { error: `"${rel}" is a directory.` };
+  if (stat.size > MAX_READ_BYTES) return { error: `"${rel}" is over ${MAX_READ_BYTES} bytes and cannot be edited by line.` };
+
+  const original = (await readHeadAsRoot(path, MAX_READ_BYTES)).toString('utf8');
+  // Configs are written on the server, so a missing trailing newline is the
+  // exception rather than the rule; keep whatever the file actually had.
+  const eol = original.includes('\r\n') ? '\r\n' : '\n';
+  const parts = original.split(eol);
+  const trailingNewline = parts[parts.length - 1] === '';
+  if (trailingNewline) parts.pop();
+
+  const outOfRange = end === start - 1
+    ? start < 1 || start > parts.length + 1
+    : start < 1 || end < start || end > parts.length;
+  if (outOfRange) {
+    return { error: `Lines ${start}-${end} are outside "${rel}", which has ${parts.length} lines.` };
+  }
+
+  const replacement = content === '' ? [] : content.split(eol);
+  if (replacement[replacement.length - 1] === '') replacement.pop();
+  const next = [...parts.slice(0, start - 1), ...replacement, ...parts.slice(end)];
+
+  const written = await writeConfigFile(cwd, rel, next.length ? next.join(eol) + (trailingNewline ? eol : '') : '');
+  if (written.error) return written;
+  return {
+    ...written,
+    startLine: start,
+    endLine: end,
+    replacedLines: replacement.length,
+    lineCount: next.length,
+    modified: (await statOrNull(path))?.mtime ?? null,
   };
 }
 

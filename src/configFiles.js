@@ -20,7 +20,7 @@ const MAX_LIST_DEPTH = 8; // subdirectories walked when `recursive` is set
 const MAX_LIST_ENTRIES = 5000;
 // A config tree is mostly noise — assets, locale dumps, jars, world databases —
 // so a listing only reports the two formats the config editor can round-trip.
-const DEFAULT_EXTENSIONS = ['json'];
+const DEFAULT_EXTENSIONS = ['toml'];
 
 export const configDir = (cwd) => `${cwd}/config`;
 

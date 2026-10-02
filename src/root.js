@@ -33,6 +33,18 @@ export async function listAsRoot(path) {
   return stdout.split('\n').filter(Boolean);
 }
 
+// Epoch seconds from `stat`/`find` to an ISO string, or null when the value is
+// not a timestamp we can represent. An unparsable field has to degrade to null:
+// toISOString() throws a RangeError ("Invalid time value") on a bad Date, and
+// one odd entry in a directory listing must not turn the whole request into a
+// 500.
+function isoFromEpochSeconds(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds)) return null;
+  const date = new Date(Math.round(seconds * 1000));
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 // Walks a directory tree in one call, resolving to entries of
 // { rel, isDir, size, mtime } where `rel` is relative to `path`. maxDepth 0
 // walks the whole tree; maxDepth 1 is the directory itself. Symbolic links are
@@ -40,8 +52,11 @@ export async function listAsRoot(path) {
 // path does not exist.
 export async function findAsRoot(path, { maxDepth = 0 } = {}) {
   const depth = maxDepth > 0 ? `-maxdepth ${Math.floor(maxDepth)}` : `-maxdepth ${MAX_FIND_DEPTH}`;
+  // %y file type, %s size, %T@ mtime in epoch seconds. Note that find's %Y is
+  // the file type too (it follows symlinks to tell a loop from a dead link) —
+  // the mtime directives are %Tk, so %T@ or %Ts, never %Y.
   const { stdout } = await execAsync(
-    `sudo find ${shq(path)} ${depth} -mindepth 1 -printf '%y\\t%s\\t%Y\\t%P\\n'`,
+    `sudo find ${shq(path)} ${depth} -mindepth 1 -printf '%y\\t%s\\t%T@\\t%P\\n'`,
   ).catch(() => ({ stdout: '' }));
 
   const entries = [];
@@ -54,7 +69,7 @@ export async function findAsRoot(path, { maxDepth = 0 } = {}) {
       rel,
       isDir: kind === 'd',
       size: Number(size) || 0,
-      mtime: new Date(Number(mtime) * 1000).toISOString(),
+      mtime: isoFromEpochSeconds(mtime),
     });
   }
   return entries;
@@ -72,14 +87,16 @@ export async function readHeadAsRoot(path, maxBytes) {
   return stdout;
 }
 
-// Stats a single path via sudo. Resolves with { isDir, size, mtime }.
+// Stats a single path via sudo. Resolves with { isDir, size, mtime }. Here %Y is
+// coreutils stat's mtime in epoch seconds, which is a different directive from
+// find's %Y above.
 export async function statAsRoot(path) {
   const { stdout } = await execAsync(`sudo stat -c '%F|%s|%Y' ${shq(path)}`);
   const [kind, size, mtime] = stdout.trim().split('|');
   return {
     isDir: kind === 'directory',
     size: Number(size) || 0,
-    mtime: new Date(Number(mtime) * 1000).toISOString(),
+    mtime: isoFromEpochSeconds(mtime),
   };
 }
 

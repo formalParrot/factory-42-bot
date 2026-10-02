@@ -526,17 +526,37 @@ async function handleRequest(req, res, pathname) {
   }
 
   // ── Config files ────────────────────────────────────────────────────────
-  // GET  /f42/services/<name>/config            — list files in <cwd>/config
-  // GET  /f42/services/<name>/config/<file>     — read a file's contents
-  // POST /f42/services/<name>/config/<file>     — create/overwrite (backs up first)
-  // DELETE /f42/services/<name>/config/<file>   — delete a file
+  // GET    /f42/services/<name>/config[?dir=&recursive=&maxDepth=&extensions=]
+  // GET    /f42/services/<name>/config/<file>[?view=raw]
+  // POST   /f42/services/<name>/config/<file>     — create/overwrite (backs up first)
+  // DELETE /f42/services/<name>/config/<file>     — delete a file
+  //
+  // <file> may be a subdirectory path (`jei/world/client.toml`), which is also
+  // what a listing returns in `name`. Listing is recursive by default so a mod's
+  // config/<mod>/ files come back without walking the tree by hand.
   if (resource === 'services' && name && parts[3] === 'config') {
     const filePath = parts[4] ? decodeURIComponent(parts.slice(4).join('/')) : '';
+    const query = new URL(req.url, 'http://localhost').searchParams;
+    // Only "0", "false", "no" and "off" turn a flag off, so ?recursive (bare)
+    // means on. Anything unrecognised keeps the default.
+    const flag = (key, fallback) => {
+      const raw = query.get(key);
+      if (raw === null || raw === '') return fallback;
+      return !/^(0|false|no|off)$/i.test(raw);
+    };
 
     if (!filePath) {
       return resolveServiceOr(res, name, async (index) => {
         if (method !== 'GET') return json(res, 405, { error: 'Method not allowed.' });
-        const result = await listConfigFiles(config.services[index].cwd);
+        const result = await listConfigFiles(config.services[index].cwd, {
+          subdir: query.get('dir') || '',
+          recursive: flag('recursive', true),
+          maxDepth: Number(query.get('maxDepth') || 0) || 0,
+          extensions: (query.get('extensions') || '').split(','),
+        });
+        if (result.error) {
+          return json(res, 400, { name: config.services[index].name, error: result.error });
+        }
         return json(res, 200, { name: config.services[index].name, ...result });
       });
     }
@@ -545,11 +565,13 @@ async function handleRequest(req, res, pathname) {
       const serviceName = config.services[index].name;
 
       if (method === 'GET') {
-        const result = await readConfigFile(config.services[index].cwd, filePath);
+        const view = (query.get('view') || '').toLowerCase() === 'raw' ? 'raw' : 'clean';
+        const result = await readConfigFile(config.services[index].cwd, filePath, { view });
         if (result.error) {
           return json(res, result.error.includes('not found') ? 404 : 400, { name: serviceName, error: result.error });
         }
-        return json(res, 200, { name: serviceName, ...result });
+        // `result.name` is the config path, so the service goes alongside it.
+        return json(res, 200, { service: serviceName, ...result });
       }
 
       if (method === 'POST') {
@@ -566,7 +588,7 @@ async function handleRequest(req, res, pathname) {
         if (result.error) {
           return json(res, 400, { name: serviceName, error: result.error });
         }
-        return json(res, result.created ? 201 : 200, { name: serviceName, ...result });
+        return json(res, result.created ? 201 : 200, { service: serviceName, ...result });
       }
 
       if (method === 'DELETE') {
@@ -574,7 +596,7 @@ async function handleRequest(req, res, pathname) {
         if (result.error) {
           return json(res, result.error.includes('not found') ? 404 : 400, { name: serviceName, error: result.error });
         }
-        return json(res, 200, { name: serviceName, ...result });
+        return json(res, 200, { service: serviceName, ...result });
       }
 
       return json(res, 405, { error: 'Method not allowed.' });

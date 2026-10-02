@@ -399,8 +399,8 @@ API keys and webhook URLs.
 | `DELETE` | `/f42/services/:name/files/:file` | Delete a mod. |
 | `POST` | `/f42/services/:name/files/:file/disable` | Rename `Foo.jar` → `Foo.jar.dis`. |
 | `POST` | `/f42/services/:name/files/:file/enable` | Rename `Foo.jar.dis` → `Foo.jar`. |
-| `GET` | `/f42/services/:name/config` | List `<cwd>/config`. |
-| `GET` | `/f42/services/:name/config/:file` | Read a config file (1 MB cap). |
+| `GET` | `/f42/services/:name/config` | List `<cwd>/config`, recursively. Takes `?dir=`, `?recursive=0`, `?maxDepth=`, `?extensions=`. |
+| `GET` | `/f42/services/:name/config/:file` | Read a config file (1 MB cap). `?view=raw` skips the reformatted copy. |
 | `POST` | `/f42/services/:name/config/:file` | Create/overwrite, body `{ "content": "..." }`. Backs up first. |
 | `DELETE` | `/f42/services/:name/config/:file` | Delete a config file. |
 | `GET` | `/f42/services/:name/server.properties` | Parsed `server.properties`. |
@@ -841,35 +841,72 @@ Mod and plugin configs live in each service's `<cwd>/config` directory. Subpaths
 are supported (`config/jei/something.toml`) and are validated against path
 traversal.
 
-Listing reports directories as `"isDir": true`:
+Listing walks the whole tree, so `config/<mod>/` files come back without a second
+request. `name` is always relative to `<cwd>/config`, so any entry can be handed
+straight back as a request path, and `depth` says how far below the listed
+directory it sits:
+
+```
+GET /f42/services/:name/config
+GET /f42/services/:name/config?recursive=0            # top level only
+GET /f42/services/:name/config?dir=jei                # start inside a subdirectory
+GET /f42/services/:name/config?maxDepth=2             # stop after 2 levels
+GET /f42/services/:name/config?extensions=toml,json   # files only, by extension
+```
 
 ```json
 {
   "name": "Survival",
   "path": "/root/server/config",
+  "subdir": "",
+  "recursive": true,
+  "exists": true,
+  "depth": 8,
+  "count": 3,
+  "truncated": false,
   "files": [
-    { "name": "jei", "isDir": true, "size": 4096, "modified": "2026-09-15T10:30:00.000Z" },
-    { "name": "server.toml", "isDir": false, "size": 2314, "modified": "2026-09-15T10:30:00.000Z" }
+    { "name": "jei", "isDir": true, "size": 0, "modified": "2026-09-15T10:30:00.000Z", "depth": 0 },
+    { "name": "jei/world", "isDir": true, "size": 0, "modified": "2026-09-15T10:30:00.000Z", "depth": 1 },
+    { "name": "server.toml", "isDir": false, "size": 2314, "modified": "2026-09-15T10:30:00.000Z", "depth": 0 }
   ]
 }
 ```
 
+`?extensions` keeps every directory so the tree stays navigable and drops files
+that do not match. At most 5000 entries come back; past that `truncated` is true.
+`?recursive=0`, `?dir=` and `?maxDepth=` are combined freely.
+
 Reading caps at 1 MB; anything larger returns `"truncated": true` with the first
-1 MB:
+1 MB. Alongside the byte-exact `content`, the response carries `format`,
+`lineCount`, `lines` and `formatted`: a reformatted copy meant for reading and
+for diffing in a panel. Nothing is ever written back from `formatted` — POST
+always uses `content`, so a round-trip is byte-for-byte — and `?view=raw` omits
+it entirely.
+
+Mods tend to write TOML in NightConfig's style: tab-indented to one level per
+table, with a `#.` separator line before every block. The reformatted copy drops
+the separators, moves keys and `[table]` headers back to column 0 (TOML has no
+indentation semantics), normalises `#Comment` to `# Comment`, wraps long comment
+lines at 100 columns, and collapses runs of blank lines to one. The result
+parses to exactly the same document, and anything inside a string value — tabs
+included — is left byte-identical:
 
 ```json
 {
-  "name": "Survival",
-  "path": "/root/server/config/server.toml",
-  "size": 2314,
-  "modified": "2026-09-15T10:30:00.000Z",
-  "truncated": false,
-  "content": "[server]\nmotd = \"Hello\"\n"
+  "service": "Survival",
+  "name": "northstar-server.toml",
+  "kind": "file",
+  "format": "toml",
+  "size": 1948,
+  "lineCount": 29,
+  "view": "clean",
+  "truncated": false
 }
 ```
 
 Writing takes `{ "content": "..." }`, backs up to `:file.bak`, and returns `201`
-for a new file or `200` for an overwrite. Deleting is
+for a new file or `200` for an overwrite. Missing parent directories are created,
+so a first write to `config/newmod/client.toml` works. Deleting is
 `DELETE /f42/services/:name/config/:file` with the path URL-encoded.
 Directories cannot be read or deleted, and paths escaping `config/` are rejected
 with a `400`.
@@ -975,7 +1012,8 @@ removed first, as the official install script does.
   all shell arguments are quoted in one helper (`root.js`).
 - **Size caps** exist where a flood would hurt: 64 KB request bodies (512 KB for
   config writes), 250 MB uploads, 1 MB config reads, a 1500-line console ring
-  buffer and a 1 MB log poll chunk.
+  buffer, a 1 MB log poll chunk, and a 5000-entry ceiling on a recursive config
+  listing (8 levels deep at most).
 - **The unauthenticated surface is six routes**: the two service status reads and
   the four whitelist ones. Three of them read `whitelist.json`, so anyone who can
   reach the API can read who is whitelisted and every whitelisted player's UUID
@@ -1050,7 +1088,7 @@ Plain ESM JavaScript on `node:http` and `ws` — no framework, no build step.
 | `whitelist.js` | Whitelist request queue, the all-services approve fan-out, and reads of each server's real `whitelist.json`. |
 | `rateLimit.js` | Sliding-window rate limiter. |
 | `files.js` | Mods directory: list, upload, delete, enable/disable. |
-| `configFiles.js` | Config directory: list, read, write, delete, path validation. |
+| `configFiles.js` | Config directory: recursive list, read (raw + reformatted), write, delete, path validation. |
 | `properties.js` | `server.properties` parse/serialise preserving comments. |
 | `bans.js` | `banned-players.json` CRUD with Mojang UUID lookup. |
 | `cores.js` | NeoForge version list, download, installer run, status polling. |

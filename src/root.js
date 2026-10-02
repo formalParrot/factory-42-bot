@@ -9,6 +9,10 @@ import { tmpdir } from 'node:os';
 
 const execAsync = promisify(exec);
 
+// Stand-in for "no -maxdepth" so a recursive walk over a config directory is
+// still bounded against symlink-free but pathological trees.
+const MAX_FIND_DEPTH = 32;
+
 export const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 export async function catAsRoot(path) {
@@ -27,6 +31,45 @@ export async function rmAsRoot(path) {
 export async function listAsRoot(path) {
   const { stdout } = await execAsync(`sudo ls -1 ${shq(path)}`).catch(() => ({ stdout: '' }));
   return stdout.split('\n').filter(Boolean);
+}
+
+// Walks a directory tree in one call, resolving to entries of
+// { rel, isDir, size, mtime } where `rel` is relative to `path`. maxDepth 0
+// walks the whole tree; maxDepth 1 is the directory itself. Symbolic links are
+// reported but never followed, so the walk cannot loop. Returns [] when the
+// path does not exist.
+export async function findAsRoot(path, { maxDepth = 0 } = {}) {
+  const depth = maxDepth > 0 ? `-maxdepth ${Math.floor(maxDepth)}` : `-maxdepth ${MAX_FIND_DEPTH}`;
+  const { stdout } = await execAsync(
+    `sudo find ${shq(path)} ${depth} -mindepth 1 -printf '%y\\t%s\\t%Y\\t%P\\n'`,
+  ).catch(() => ({ stdout: '' }));
+
+  const entries = [];
+  for (const line of stdout.split('\n')) {
+    if (!line) continue;
+    const [kind, size, mtime, ...rest] = line.split('\t');
+    const rel = rest.join('\t');
+    if (!kind || !rel) continue;
+    entries.push({
+      rel,
+      isDir: kind === 'd',
+      size: Number(size) || 0,
+      mtime: new Date(Number(mtime) * 1000).toISOString(),
+    });
+  }
+  return entries;
+}
+
+// Reads at most `maxBytes` from the front of a file as a Buffer. Oversized
+// files are cut off rather than rejected, so `catAsRoot`'s exec maxBuffer
+// ceiling cannot turn a big config into a 500.
+export async function readHeadAsRoot(path, maxBytes) {
+  const cap = Math.max(1, Math.floor(maxBytes));
+  const { stdout } = await execAsync(`sudo head -c ${cap} ${shq(path)}`, {
+    encoding: 'buffer',
+    maxBuffer: cap + 1024,
+  });
+  return stdout;
 }
 
 // Stats a single path via sudo. Resolves with { isDir, size, mtime }.

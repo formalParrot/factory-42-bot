@@ -404,6 +404,9 @@ export async function patchConfigLines(cwd, name, { startLine, endLine, content 
 
   const start = Number(startLine);
   const end = endLine === undefined || endLine === null || endLine === '' ? start : Number(endLine);
+  if (startLine === undefined || startLine === null || startLine === '') {
+    return { error: 'Body must contain "startLine" and "endLine", or "search" and "replace" to change text without line numbers.' };
+  }
   if (!Number.isInteger(start) || !Number.isInteger(end)) {
     return { error: 'Body must contain integer "startLine" and "endLine" line numbers.' };
   }
@@ -441,6 +444,57 @@ export async function patchConfigLines(cwd, name, { startLine, endLine, content 
     endLine: end,
     replacedLines: replacement.length,
     lineCount: next.length,
+    modified: (await statOrNull(path))?.mtime ?? null,
+  };
+}
+
+// Replaces a literal substring anywhere in the file, across lines, so a setting
+// can be changed without knowing its line number. `expect` is how many matches
+// the caller believes are there (1 by default) and the write only happens when
+// the file agrees — a renamed key or a copy-pasted duplicate fails instead of
+// quietly rewriting every occurrence.
+export async function replaceInConfigFile(cwd, name, { search, replace = '', expect }) {
+  const rel = validateConfigPath(name);
+  if (!rel) return { error: `Invalid config file path: ${name}` };
+  if (typeof search !== 'string' || search === '') {
+    return { error: 'Body must contain a non-empty "search" string.' };
+  }
+  if (typeof replace !== 'string') return { error: 'Body must contain a "replace" string.' };
+  const want = expect === undefined ? 1 : Number(expect);
+  if (!Number.isInteger(want) || want < 0) return { error: '"expect" must be a non-negative integer.' };
+
+  const path = `${configDir(cwd)}/${rel}`;
+  const stat = await statOrNull(path);
+  if (!stat) return { error: `Config file "${rel}" not found.` };
+  if (stat.isDir) return { error: `"${rel}" is a directory.` };
+  if (stat.size > MAX_READ_BYTES) return { error: `"${rel}" is over ${MAX_READ_BYTES} bytes and cannot be edited.` };
+
+  const original = (await readHeadAsRoot(path, MAX_READ_BYTES)).toString('utf8');
+  // split/join counts and replaces every occurrence, including ones that share
+  // characters, in a single pass.
+  const parts = original.split(search);
+  const matches = parts.length - 1;
+  if (matches !== want) {
+    const where = matches === 0 ? 'no match for' : `${matches} matches for`;
+    return { error: `Found ${where} ${JSON.stringify(search)} in "${rel}", but "expect" was ${want}.` };
+  }
+
+  const next = parts.join(replace);
+  const lineCount = next === '' ? 0 : next.split('\n').length - (next.endsWith('\n') ? 1 : 0);
+  const firstLine = original.slice(0, original.indexOf(search)).split('\n').length;
+  if (next === original) {
+    return { name: rel, path, created: false, backedUp: false, changed: false, matches, replaced: 0, lineCount, firstLine, modified: stat.mtime };
+  }
+
+  const written = await writeConfigFile(cwd, rel, next);
+  if (written.error) return written;
+  return {
+    ...written,
+    changed: true,
+    matches,
+    replaced: matches,
+    lineCount,
+    firstLine,
     modified: (await statOrNull(path))?.mtime ?? null,
   };
 }

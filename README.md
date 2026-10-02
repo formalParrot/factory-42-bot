@@ -401,7 +401,7 @@ API keys and webhook URLs.
 | `POST` | `/f42/services/:name/files/:file/enable` | Rename `Foo.jar.dis` → `Foo.jar`. |
 | `GET` | `/f42/services/:name/config` | List `<cwd>/config` recursively, `.toml` only. Takes `?dir=`, `?recursive=0`, `?maxDepth=`, `?extensions=`. |
 | `GET` | `/f42/services/:name/config/:file` | Read a config file (1 MB cap). `?view=raw` skips the reformatted copy. |
-| `PUT` | `/f42/services/:name/config/:file` | Edit part of a file by line, body `{ "startLine", "endLine"?, "content" }`. Backs up first. |
+| `PUT` | `/f42/services/:name/config/:file` | Edit a file, body `{ "startLine", "endLine"?, "content" }` or `{ "search", "replace", "expect"? }`. Backs up first. |
 | `POST` | `/f42/services/:name/config/:file` | Create/overwrite, body `{ "content": "..." }`. Backs up first. |
 | `DELETE` | `/f42/services/:name/config/:file` | Delete a config file. |
 | `GET` | `/f42/services/:name/server.properties` | Parsed `server.properties`. |
@@ -934,6 +934,20 @@ unchanged, the file is backed up first, and the response reports the new
 `lineCount`, `replacedLines` and `modified`. A range past the end of the file is
 a `400` that names the file's real line count rather than writing something
 wrong.
+
+The same `PUT` takes `search`/`replace` instead, which needs no line numbers at
+all — `search` is a literal substring and may span lines:
+
+```json
+{ "search": "  motd = \"hello\"", "replace": "  motd = \"survival\"", "expect": 1 }
+```
+
+`expect` is how many matches the caller thinks are in the file (1 by default) and
+the write only happens when the file agrees. A key that got renamed or a setting
+that appears in two tables therefore fails with a `400` telling you the real
+count, rather than rewriting every occurrence. Nothing is written when the
+replacement is identical to what was found (`"changed": false`), and the response
+reports `matches`, `replaced`, `firstLine` and `lineCount`.
 
 ### Banned players
 

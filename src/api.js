@@ -14,6 +14,7 @@ import {
   listConfigFiles,
   patchConfigLines,
   readConfigFile,
+  replaceInConfigFile,
   writeConfigFile,
   deleteConfigFile,
 } from './configFiles.js';
@@ -602,7 +603,9 @@ async function handleRequest(req, res, pathname) {
         } catch (err) {
           return json(res, 400, { error: err.message });
         }
-        const result = await patchConfigLines(config.services[index].cwd, filePath, body);
+        const result = body.search === undefined
+          ? await patchConfigLines(config.services[index].cwd, filePath, body)
+          : await replaceInConfigFile(config.services[index].cwd, filePath, body);
         if (result.error) {
           return json(res, result.error.includes('not found') ? 404 : 400, { service: serviceName, error: result.error });
         }

@@ -98,6 +98,48 @@ function sendFile(res, buffer, name) {
   res.end(buffer);
 }
 
+// Narrow multipart/form-data reader: the first part carrying a filename wins, or
+// the first part at all when nothing was uploaded. Enough for a client's "send
+// this file" field, without pulling in a parser — nested multiparts are out of
+// scope, and anything else has to fail loudly rather than be written as a config.
+function multipartFile(buffer, contentType) {
+  const boundary = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType);
+  if (!boundary) return { error: 'multipart/form-data body without a boundary parameter.' };
+  const dash = Buffer.from(`--${(boundary[1] ?? boundary[2]).trim()}`);
+
+  const files = [];
+  const fields = [];
+  for (let from = buffer.indexOf(dash); from !== -1; from = buffer.indexOf(dash, from)) {
+    // Skip the CRLF that ends the boundary line, then take everything up to the
+    // next boundary — the closing `--boundary--` matches too and ends the walk.
+    const start = buffer.indexOf('\r\n', from) === from + dash.length ? from + dash.length + 2 : from + dash.length;
+    const next = buffer.indexOf(dash, start);
+    if (next === -1) break;
+    const part = buffer.subarray(start, next);
+    // The CRLF in front of a boundary belongs to the delimiter, not the part.
+    const body0 = part.length >= 2 && part[part.length - 2] === 0x0d && part[part.length - 1] === 0x0a
+      ? part.subarray(0, part.length - 2)
+      : part;
+    const split = body0.indexOf('\r\n\r\n');
+    if (split !== -1) {
+      const headers = body0.subarray(0, split).toString('utf8');
+      const raw = body0.subarray(split + 4);
+      const filename = /filename="([^"]*)"/i.exec(headers);
+      const name = /name="([^"]*)"/i.exec(headers);
+      const base64 = /content-transfer-encoding:\s*base64/i.test(headers);
+      const body = base64 ? Buffer.from(raw.toString('utf8').trim(), 'base64') : raw;
+      if (filename) files.push({ label: filename[1], body });
+      else fields.push({ label: name?.[1] ?? '', body });
+    }
+    from = next;
+  }
+
+  if (files.length > 1) return { error: `Send one file per request; this body has ${files.length}.` };
+  const pick = files[0] ?? fields[0];
+  if (!pick) return { error: 'multipart/form-data body contained no parts.' };
+  return { filename: pick.label, content: pick.body.toString('utf8') };
+}
+
 function readBody(req, maxBytes = MAX_BODY) {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -606,15 +648,27 @@ async function handleRequest(req, res, pathname) {
       }
 
       if (method === 'POST') {
-        // A non-JSON content type means the body *is* the file, so an edited
-        // copy can be uploaded without being escaped into a JSON string first.
-        const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
-        if (contentType && contentType !== 'application/json' && contentType !== 'text/json') {
-          const result = await writeConfigFile(
-            config.services[index].cwd,
-            filePath,
-            (await readBody(req, MAX_CONFIG_RAW)).toString('utf8'),
-          );
+        // The body is the file itself unless it is JSON: any other content type
+        // means an edited copy is being uploaded verbatim, either as the raw
+        // bytes or as the file part of a multipart form.
+        const contentType = String(req.headers['content-type'] || '');
+        const type = contentType.split(';')[0].trim().toLowerCase();
+        if (type && type !== 'application/json' && type !== 'text/json') {
+          let uploaded;
+          if (type === 'multipart/form-data') {
+            const part = multipartFile(await readBody(req, MAX_CONFIG_RAW), contentType);
+            if (part.error) return json(res, 400, { service: serviceName, error: part.error });
+            uploaded = part.content;
+          } else if (type === 'application/x-www-form-urlencoded') {
+            return json(res, 400, {
+              service: serviceName,
+              error: 'Form URL-encoded bodies are not files. Send the file as multipart/form-data, or as a raw text/plain body.',
+            });
+          } else {
+            uploaded = (await readBody(req, MAX_CONFIG_RAW)).toString('utf8');
+          }
+
+          const result = await writeConfigFile(config.services[index].cwd, filePath, uploaded);
           if (result.error) {
             return json(res, result.error.includes('not found') ? 404 : 400, { service: serviceName, error: result.error });
           }

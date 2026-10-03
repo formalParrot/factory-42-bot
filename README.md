@@ -402,7 +402,7 @@ API keys and webhook URLs.
 | `GET` | `/f42/services/:name/config` | List `<cwd>/config` recursively, `.toml` only. Takes `?dir=`, `?recursive=0`, `?maxDepth=`, `?extensions=`. |
 | `GET` | `/f42/services/:name/config/:file` | Read a config file (1 MB cap). `?view=raw` skips the reformatted copy, `?download` sends the bytes as a file. |
 | `PUT` | `/f42/services/:name/config/:file` | Edit a file, body `{ "startLine", "endLine"?, "content" }` or `{ "search", "replace", "expect"? }`. Backs up first. |
-| `POST` | `/f42/services/:name/config/:file` | Create/overwrite, body `{ "content": "..." }` or the raw file for any non-JSON content type. Backs up first. |
+| `POST` | `/f42/services/:name/config/:file` | Create/overwrite, body `{ "content": "..." }`, a raw body, or a `multipart/form-data` file part for any non-JSON content type. Backs up first. |
 | `DELETE` | `/f42/services/:name/config/:file` | Delete a config file. |
 | `GET` | `/f42/services/:name/server.properties` | Parsed `server.properties`. |
 | `POST` | `/f42/services/:name/server.properties` | Patch keys, body `{ "properties": { "max-players": "50" } }`. Backs up first. |
@@ -909,6 +909,14 @@ The upload backs up to `client.toml.bak` and answers with the new `size`. A JSON
 since the body of a raw upload *is* the file, send an empty file deliberately
 rather than by accident. Download refuses anything over 1 MB instead of
 truncating it, so a copy can never come back subtly different.
+
+`multipart/form-data` works too, which is the shape a client with a file picker
+sends: the first part carrying a `filename` is the file, a plain text field is
+used when there is no file part, and a body with two files is a `400` rather than
+a coin flip. Send the file as a *file* part — a text field travels through some
+HTTP stacks (Node's `fetch`, for one) with its line endings rewritten to CRLF.
+A `application/x-www-form-urlencoded` body is refused too, since it is a form and
+not a file.
 
 Mods tend to write TOML in NightConfig's style: tab-indented to one level per
 table, with a `#.` separator line before every block. The reformatted copy drops

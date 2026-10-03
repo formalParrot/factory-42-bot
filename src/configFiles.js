@@ -499,6 +499,19 @@ export async function replaceInConfigFile(cwd, name, { search, replace = '', exp
   };
 }
 
+// The file's exact bytes, for downloading a copy to edit locally. Refuses rather
+// than truncating, so a download and upload round trip is never quietly lossy.
+export async function getConfigBytes(cwd, name) {
+  const rel = validateConfigPath(name);
+  if (!rel) return { error: `Invalid config file path: ${name}` };
+  const path = `${configDir(cwd)}/${rel}`;
+  const stat = await statOrNull(path);
+  if (!stat) return { error: `Config file "${rel}" not found.` };
+  if (stat.isDir) return { error: `"${rel}" is a directory.` };
+  if (stat.size > MAX_READ_BYTES) return { error: `"${rel}" is over ${MAX_READ_BYTES} bytes; too large to download.` };
+  return { name: rel, path, buffer: await readHeadAsRoot(path, MAX_READ_BYTES), modified: stat.mtime };
+}
+
 export async function deleteConfigFile(cwd, name) {
   const rel = validateConfigPath(name);
   if (!rel) return { error: `Invalid config file path: ${name}` };

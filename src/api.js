@@ -17,6 +17,7 @@ import {
   replaceInConfigFile,
   writeConfigFile,
   deleteConfigFile,
+  getConfigBytes,
 } from './configFiles.js';
 import { entriesToObject, parseProperties, serializeProperties, setEntry } from './properties.js';
 import { coreBusy, coreConfigured, getCoreStatus, listAllVersions, updateCore } from './cores.js';
@@ -57,6 +58,7 @@ const WHITELIST_STATUSES = ['pending', 'approved', 'denied'];
 const WS_HISTORY_LINES = 500;
 const MAX_BODY = 64 * 1024;
 const MAX_CONFIG_BODY = 512 * 1024;
+const MAX_CONFIG_RAW = 1024 * 1024; // raw upload, matching the 1 MB read cap
 const KEY_RE = /^[^=:#!\s\\]+$/;
 const REPO_DIR = fileURLToPath(new URL('../', import.meta.url));
 const execAsync = promisify(exec);
@@ -80,6 +82,20 @@ function json(res, status, body) {
     'Content-Length': Buffer.byteLength(payload),
   });
   res.end(payload);
+}
+
+// A file's bytes as a download, so an editor can save a copy, edit it and send it
+// back. Both RFC 5987 and the plain filename are set because the ASCII one has to
+// stay inside the quoted string.
+function sendFile(res, buffer, name) {
+  const base = name.slice(name.lastIndexOf('/') + 1);
+  const ascii = base.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  res.writeHead(200, {
+    'Content-Type': 'application/octet-stream',
+    'Content-Length': buffer.length,
+    'Content-Disposition': `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(base)}`,
+  });
+  res.end(buffer);
 }
 
 function readBody(req, maxBytes = MAX_BODY) {
@@ -529,7 +545,7 @@ async function handleRequest(req, res, pathname) {
 
   // ── Config files ────────────────────────────────────────────────────────
   // GET    /f42/services/<name>/config[?dir=&recursive=&maxDepth=&extensions=]
-  // GET    /f42/services/<name>/config/<file>[?view=raw]
+  // GET    /f42/services/<name>/config/<file>[?view=raw&download]
   // PUT    /f42/services/<name>/config/<file>     — {startLine, endLine?, content} line edit
   // POST   /f42/services/<name>/config/<file>     — create/overwrite (backs up first)
   // DELETE /f42/services/<name>/config/<file>     — delete a file
@@ -542,11 +558,11 @@ async function handleRequest(req, res, pathname) {
   if (resource === 'services' && name && parts[3] === 'config') {
     const filePath = parts[4] ? decodeURIComponent(parts.slice(4).join('/')) : '';
     const query = new URL(req.url, 'http://localhost').searchParams;
-    // Only "0", "false", "no" and "off" turn a flag off, so ?recursive (bare)
-    // means on. Anything unrecognised keeps the default.
+    // A bare flag (?recursive, ?download) means on, and only "0", "false", "no" and
+// "off" turn it off. A missing flag keeps the caller's default.
     const flag = (key, fallback) => {
       const raw = query.get(key);
-      if (raw === null || raw === '') return fallback;
+      if (raw === null) return fallback;
       return !/^(0|false|no|off)$/i.test(raw);
     };
 
@@ -570,6 +586,16 @@ async function handleRequest(req, res, pathname) {
       const serviceName = config.services[index].name;
 
       if (method === 'GET') {
+        // ?download hands back the file's bytes instead of the JSON envelope, so
+        // `curl -OJ` (or a client's save-as) yields a file an editor can open.
+        if (flag('download', false)) {
+          const bytes = await getConfigBytes(config.services[index].cwd, filePath);
+          if (bytes.error) {
+            return json(res, bytes.error.includes('not found') ? 404 : 400, { service: serviceName, error: bytes.error });
+          }
+          return sendFile(res, bytes.buffer, bytes.name);
+        }
+
         const view = (query.get('view') || '').toLowerCase() === 'raw' ? 'raw' : 'clean';
         const result = await readConfigFile(config.services[index].cwd, filePath, { view });
         if (result.error) {
@@ -580,6 +606,21 @@ async function handleRequest(req, res, pathname) {
       }
 
       if (method === 'POST') {
+        // A non-JSON content type means the body *is* the file, so an edited
+        // copy can be uploaded without being escaped into a JSON string first.
+        const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+        if (contentType && contentType !== 'application/json' && contentType !== 'text/json') {
+          const result = await writeConfigFile(
+            config.services[index].cwd,
+            filePath,
+            (await readBody(req, MAX_CONFIG_RAW)).toString('utf8'),
+          );
+          if (result.error) {
+            return json(res, result.error.includes('not found') ? 404 : 400, { service: serviceName, error: result.error });
+          }
+          return json(res, result.created ? 201 : 200, { service: serviceName, uploaded: true, ...result });
+        }
+
         let body;
         try {
           body = JSON.parse((await readBody(req, MAX_CONFIG_BODY)).toString('utf8') || '{}');
@@ -587,7 +628,7 @@ async function handleRequest(req, res, pathname) {
           return json(res, 400, { error: err.message });
         }
         if (typeof body.content !== 'string') {
-          return json(res, 400, { error: 'Body must contain a "content" string, e.g. {"content":"..."}.' });
+          return json(res, 400, { error: 'Body must contain a "content" string, e.g. {"content":"..."}, or be sent as a raw file body.' });
         }
         const result = await writeConfigFile(config.services[index].cwd, filePath, body.content);
         if (result.error) {

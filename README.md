@@ -400,9 +400,9 @@ API keys and webhook URLs.
 | `POST` | `/f42/services/:name/files/:file/disable` | Rename `Foo.jar` → `Foo.jar.dis`. |
 | `POST` | `/f42/services/:name/files/:file/enable` | Rename `Foo.jar.dis` → `Foo.jar`. |
 | `GET` | `/f42/services/:name/config` | List `<cwd>/config` recursively, `.toml` only. Takes `?dir=`, `?recursive=0`, `?maxDepth=`, `?extensions=`. |
-| `GET` | `/f42/services/:name/config/:file` | Read a config file (1 MB cap). `?view=raw` skips the reformatted copy. |
+| `GET` | `/f42/services/:name/config/:file` | Read a config file (1 MB cap). `?view=raw` skips the reformatted copy, `?download` sends the bytes as a file. |
 | `PUT` | `/f42/services/:name/config/:file` | Edit a file, body `{ "startLine", "endLine"?, "content" }` or `{ "search", "replace", "expect"? }`. Backs up first. |
-| `POST` | `/f42/services/:name/config/:file` | Create/overwrite, body `{ "content": "..." }`. Backs up first. |
+| `POST` | `/f42/services/:name/config/:file` | Create/overwrite, body `{ "content": "..." }` or the raw file for any non-JSON content type. Backs up first. |
 | `DELETE` | `/f42/services/:name/config/:file` | Delete a config file. |
 | `GET` | `/f42/services/:name/server.properties` | Parsed `server.properties`. |
 | `POST` | `/f42/services/:name/server.properties` | Patch keys, body `{ "properties": { "max-players": "50" } }`. Backs up first. |
@@ -890,6 +890,25 @@ Reading caps at 1 MB; anything larger returns `"truncated": true` with the first
 for diffing in a panel. Nothing is ever written back from `formatted` — POST
 always uses `content`, so a round-trip is byte-for-byte — and `?view=raw` omits
 it entirely.
+
+To edit in a real editor, `?download` skips the JSON envelope and sends the
+file's bytes with `Content-Disposition: attachment`, and a `POST` whose body is
+*not* JSON is taken as the file itself. So the round trip is download → edit →
+upload, with nothing escaped and nothing reformatted:
+
+```bash
+# save a copy under its own name, edit it, send it back
+curl -sOJ -H "x-api-key: $API_TOKEN" "$BASE/services/$SVC/config/jei/world/client.toml?download"
+$EDITOR client.toml
+curl -s -X POST -H "x-api-key: $API_TOKEN" -H 'content-type: text/plain' \
+  --data-binary @client.toml "$BASE/services/$SVC/config/jei/world/client.toml"
+```
+
+The upload backs up to `client.toml.bak` and answers with the new `size`. A JSON
+`POST` still takes `{"content": "..."}`, which is what the other clients use;
+since the body of a raw upload *is* the file, send an empty file deliberately
+rather than by accident. Download refuses anything over 1 MB instead of
+truncating it, so a copy can never come back subtly different.
 
 Mods tend to write TOML in NightConfig's style: tab-indented to one level per
 table, with a `#.` separator line before every block. The reformatted copy drops

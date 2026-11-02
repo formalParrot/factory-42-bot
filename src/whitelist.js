@@ -19,6 +19,7 @@
 // `skipped: true`, so a caller can tell "not whitelisted" from "we don't check
 // there" instead of guessing.
 import { join } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import config from './config.js';
 import { sendConsole, sessionExists } from './tmux.js';
 import { catAsRoot, existsAsRoot } from './root.js';
@@ -34,6 +35,8 @@ const NAME_RE = /^[A-Za-z0-9_]{3,16}$/;
 const MAX_CONTACT_LENGTH = 200;
 // Keeps the queue bounded even though intake is rate limited per IP.
 const MAX_TRACKED = 500;
+const DATA_DIR = new URL('../data/', import.meta.url);
+const DATA_FILE = new URL('../data/whitelist.json', import.meta.url);
 
 const STATUS = { PENDING: 'pending', APPROVED: 'approved', DENIED: 'denied', REVOKED: 'revoked' };
 
@@ -41,6 +44,29 @@ const STATUS = { PENDING: 'pending', APPROVED: 'approved', DENIED: 'denied', REV
 const requests = new Map();
 
 const key = (name) => String(name).toLowerCase();
+
+function loadRequests() {
+  try {
+    const saved = JSON.parse(readFileSync(DATA_FILE, 'utf8'));
+    if (!Array.isArray(saved)) throw new Error('Expected an array of whitelist requests.');
+    for (const request of saved) {
+      if (request?.name && typeof request.name === 'string') {
+        requests.set(key(request.name), request);
+      }
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      console.error('Could not load whitelist data:', err.message);
+    }
+  }
+}
+
+function saveRequests() {
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(DATA_FILE, JSON.stringify([...requests.values()], null, 2));
+}
+
+loadRequests();
 
 export function isValidPlayerName(name) {
   return typeof name === 'string' && NAME_RE.test(name);
@@ -87,6 +113,7 @@ export function createRequest(name, contact, ip, discordUserId = null, discordTa
   };
   if (requests.size >= MAX_TRACKED) trimOldest();
   requests.set(key(name), request);
+  saveRequests();
   return { request, already: false };
 }
 
@@ -115,6 +142,7 @@ export async function revokeRequest(name) {
   request.decidedAt = new Date().toISOString();
   request.command = command;
   request.services = services;
+  saveRequests();
   return { request, command, services };
 }
 
@@ -123,6 +151,7 @@ export function denyRequest(name) {
   if (!request) return null;
   request.status = STATUS.DENIED;
   request.decidedAt = new Date().toISOString();
+  saveRequests();
   return request;
 }
 
@@ -155,6 +184,7 @@ export async function approveRequest(name) {
   request.decidedAt = new Date().toISOString();
   request.command = command;
   request.services = services;
+  saveRequests();
   return { request, command, services };
 }
 

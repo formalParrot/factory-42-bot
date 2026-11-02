@@ -3,10 +3,12 @@ import {
   AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ContainerBuilder,
   EmbedBuilder,
   MessageFlags,
   ModalBuilder,
   PermissionFlagsBits,
+  TextDisplayBuilder,
   TextInputBuilder,
   TextInputStyle,
 } from 'discord.js';
@@ -61,47 +63,60 @@ function canManageWhitelist(member) {
 
 function buildWhitelistPanel() {
   return {
-    embeds: [
-      new EmbedBuilder()
-        .setTitle('Minecraft Whitelist')
-        .setColor(POST_COLOR)
-        .setDescription('Click the button below and enter your Minecraft username to request access.'),
-    ],
     components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('whitelist:request')
-          .setLabel('Request whitelist')
-          .setStyle(ButtonStyle.Success),
-      ),
+      new ContainerBuilder()
+        .addTextDisplayComponents(
+          new TextDisplayBuilder().setContent(
+            '## Minecraft Whitelist\nClick the button below and enter your Minecraft username to request access.',
+          ),
+        )
+        .addActionRowComponents(
+          new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setCustomId('whitelist:request')
+              .setLabel('Request whitelist')
+              .setStyle(ButtonStyle.Success),
+          ),
+        ),
     ],
+    flags: MessageFlags.IsComponentsV2,
   };
 }
 
 function buildWhitelistRequest(request) {
   return {
-    embeds: [
-      new EmbedBuilder()
-        .setTitle('Whitelist request')
-        .setColor(POST_COLOR)
-        .addFields(
-          { name: 'Minecraft username', value: request.name, inline: true },
-          { name: 'Discord user', value: `<@${request.discordUserId}>`, inline: true },
-        )
-        .setTimestamp(new Date(request.requestedAt)),
-    ],
     components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`whitelist:approve:${request.name}`)
-          .setLabel('Approve')
-          .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId(`whitelist:deny:${request.name}`)
-          .setLabel('Deny')
-          .setStyle(ButtonStyle.Danger),
+      new ContainerBuilder()
+        .addTextDisplayComponents(
+          new TextDisplayBuilder().setContent(
+            `## Whitelist request\n**Minecraft username:** ${request.name}\n**Discord user:** <@${request.discordUserId}>`,
+          ),
+        )
+        .addActionRowComponents(
+          new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`whitelist:approve:${request.name}`)
+              .setLabel('Approve')
+              .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+              .setCustomId(`whitelist:deny:${request.name}`)
+              .setLabel('Deny')
+              .setStyle(ButtonStyle.Danger),
+          ),
+        ),
+    ],
+    flags: MessageFlags.IsComponentsV2,
+  };
+}
+
+function buildWhitelistResult(text, ephemeral = false) {
+  return {
+    components: [
+      new ContainerBuilder().addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(text),
       ),
     ],
+    flags: MessageFlags.IsComponentsV2 | (ephemeral ? MessageFlags.Ephemeral : 0),
   };
 }
 
@@ -147,9 +162,11 @@ async function handleCommand(interaction) {
     const description = approved.length
       ? approved.map((request) => `**${request.name}** — <@${request.discordUserId}>`).join('\n')
       : 'No linked whitelisted users.';
-    const components = [];
+    const viewContainer = new ContainerBuilder().addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(`## Whitelisted users\n${description}`),
+    );
     for (let i = 0; i < approved.length; i += 5) {
-      components.push(
+      viewContainer.addActionRowComponents(
         new ActionRowBuilder().addComponents(
           ...approved.slice(i, i + 5).map((request) =>
             new ButtonBuilder()
@@ -161,9 +178,8 @@ async function handleCommand(interaction) {
       );
     }
     return interaction.reply({
-      embeds: [new EmbedBuilder().setTitle('Whitelisted users').setDescription(description).setColor(POST_COLOR)],
-      components,
-      flags: MessageFlags.Ephemeral,
+      components: [viewContainer],
+      flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
     });
   }
 
@@ -325,17 +341,17 @@ async function handleButton(interaction) {
     }
     if (action === 'deny') {
       denyRequest(request.name);
-      return interaction.update({ content: `Denied whitelist request for ${request.name}.`, embeds: [], components: [] });
+      return interaction.update(buildWhitelistResult(`Denied whitelist request for ${request.name}.`));
     }
     if (action === 'approve') {
       await interaction.deferUpdate();
       await approveRequest(request.name);
-      return interaction.editReply({ content: `Approved ${request.name}.`, embeds: [], components: [] });
+      return interaction.editReply(buildWhitelistResult(`Approved ${request.name}.`));
     }
     if (action === 'revoke') {
       await interaction.deferUpdate();
       await revokeRequest(request.name);
-      return interaction.editReply({ content: `Removed ${request.name} from the whitelist.`, embeds: [], components: [] });
+      return interaction.editReply(buildWhitelistResult(`Removed ${request.name} from the whitelist.`, true));
     }
   }
 

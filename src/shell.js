@@ -1,9 +1,10 @@
 // Root shell backing the /f42/root WebSocket. Each client gets its own
-// long-lived `sudo -i` login shell (passwordless sudo, same requirement the
-// rest of the bot relies on). Commands sent on the socket are fed to the
+// long-lived `sudo -i` login shell. Commands sent on the socket are fed to the
 // shell's stdin, so state (cwd, env, variables) persists across commands.
 // Output follows the same frame protocol as the service consoles: line/echo/
-// error/status JSON messages.
+// error/status JSON messages. Note: programs requiring a full TTY (e.g. nano)
+// may not work optimally due to pipe-based transport, but interactive shells
+// and most commands function correctly.
 import { spawn } from 'node:child_process';
 
 const SHELL = ['sudo', '-i'];
@@ -89,16 +90,17 @@ export function attachRootShell(ws) {
 
   ws.on('close', () => {
     if (flushTimer) clearTimeout(flushTimer);
-    if (child && child.exitCode == null && !child.killed) {
-      try {
-        child.stdin.write('exit\n');
-      } catch {
-        /* stdin already gone */
-      }
-      const killTimer = setTimeout(() => child.kill('SIGKILL'), 500);
-      if (killTimer.unref) killTimer.unref();
-      child.once('close', () => clearTimeout(killTimer));
+    if (ended) return;
+    ended = true;
+    flush();
+    try {
+      child.stdin.write('exit\n');
+    } catch {
+      /* stdin already gone */
     }
+    const killTimer = setTimeout(() => child.kill('SIGKILL'), 500);
+    if (killTimer.unref) killTimer.unref();
+    child.once('close', () => clearTimeout(killTimer));
   });
   ws.on('error', () => {});
 }

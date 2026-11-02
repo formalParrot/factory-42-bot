@@ -35,7 +35,7 @@ const MAX_CONTACT_LENGTH = 200;
 // Keeps the queue bounded even though intake is rate limited per IP.
 const MAX_TRACKED = 500;
 
-const STATUS = { PENDING: 'pending', APPROVED: 'approved', DENIED: 'denied' };
+const STATUS = { PENDING: 'pending', APPROVED: 'approved', DENIED: 'denied', REVOKED: 'revoked' };
 
 // Lowercased player name -> request record. Insertion order is request order.
 const requests = new Map();
@@ -68,7 +68,7 @@ export function getRequest(name) {
   return requests.get(key(name)) ?? null;
 }
 
-export function createRequest(name, contact, ip) {
+export function createRequest(name, contact, ip, discordUserId = null, discordTag = '') {
   const existing = requests.get(key(name));
   if (existing) return { request: existing, already: true };
   const request = {
@@ -80,10 +80,40 @@ export function createRequest(name, contact, ip) {
     decidedAt: null,
     command: null,
     services: null,
+    discordUserId,
+    discordTag,
   };
   if (requests.size >= MAX_TRACKED) trimOldest();
   requests.set(key(name), request);
   return { request, already: false };
+}
+
+export async function revokeRequest(name) {
+  const request = requests.get(key(name));
+  if (!request) return null;
+  const command = `whitelist remove ${request.name}`;
+  const services = await Promise.all(
+    config.services.map(async (service, index) => {
+      if (!isWhitelistEnabled(index)) {
+        return { name: service.name, running: null, sent: false, skipped: true, error: null };
+      }
+      const running = await sessionExists(service.tmuxSession);
+      if (!running) {
+        return { name: service.name, running: false, sent: false, skipped: false, error: 'Service is not running.' };
+      }
+      try {
+        await sendConsole(service.tmuxSession, command);
+        return { name: service.name, running: true, sent: true, skipped: false, error: null };
+      } catch (err) {
+        return { name: service.name, running: true, sent: false, skipped: false, error: err.message };
+      }
+    }),
+  );
+  request.status = STATUS.REVOKED;
+  request.decidedAt = new Date().toISOString();
+  request.command = command;
+  request.services = services;
+  return { request, command, services };
 }
 
 export function denyRequest(name) {

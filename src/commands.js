@@ -42,6 +42,18 @@ export const commandData = [
         .setDescription('Channel to post in (defaults to the current one)')
         .addChannelTypes(...postableChannels),
     ),
+  new SlashCommandBuilder()
+    .setName('whitelist-setup')
+    .setDescription('Set up the whitelist system'),
+  new SlashCommandBuilder()
+    .setName('whitelist')
+    .setDescription('Manage the server whitelist')
+    .addSubcommand((sub) =>
+      sub.setName('setup').setDescription('Post the whitelist request panel'),
+    )
+    .addSubcommand((sub) =>
+      sub.setName('view').setDescription('View linked whitelisted users'),
+    ),
 ].map((command) => command.toJSON());
 
 export async function registerCommands(client) {

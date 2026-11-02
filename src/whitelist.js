@@ -70,7 +70,9 @@ export function getRequest(name) {
 
 export function createRequest(name, contact, ip, discordUserId = null, discordTag = '') {
   const existing = requests.get(key(name));
-  if (existing) return { request: existing, already: true };
+  if (existing && (existing.status === STATUS.PENDING || existing.status === STATUS.APPROVED)) {
+    return { request: existing, already: true };
+  }
   const request = {
     name,
     contact: typeof contact === 'string' ? contact.trim().slice(0, MAX_CONTACT_LENGTH) : '',

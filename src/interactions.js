@@ -39,9 +39,11 @@ const POST_COLOR = 0x5865f2;
 const PENDING_TTL_MS = 15 * 60_000;
 const WHITELIST_REQUEST_CHANNEL_ID = '1534290784168317008';
 const MOD_ROLE_ID = '1542277312219713626';
+const REQUEST_COOLDOWN_MS = 60 * 60_000;
 
 // /modpack attachments awaiting their modal submit, keyed by interaction id.
 const pendingModpacks = new Map();
+const whitelistRequestCooldowns = new Map();
 
 function isAdmin(member) {
   if (!member) return false;
@@ -118,6 +120,16 @@ function buildWhitelistResult(text, ephemeral = false) {
     ],
     flags: MessageFlags.IsComponentsV2 | (ephemeral ? MessageFlags.Ephemeral : 0),
   };
+}
+
+async function notifyWhitelistUser(client, request, message) {
+  if (!request.discordUserId) return;
+  try {
+    const user = await client.users.fetch(request.discordUserId);
+    await user.send(message);
+  } catch (err) {
+    console.warn(`Could not DM whitelist user ${request.discordUserId}:`, err.message);
+  }
 }
 
 export async function handleInteraction(interaction) {
@@ -341,16 +353,31 @@ async function handleButton(interaction) {
     }
     if (action === 'deny') {
       denyRequest(request.name);
+      await notifyWhitelistUser(
+        interaction.client,
+        request,
+        `Your whitelist request for **${request.name}** was denied.`,
+      );
       return interaction.update(buildWhitelistResult(`Denied whitelist request for ${request.name}.`));
     }
     if (action === 'approve') {
       await interaction.deferUpdate();
       await approveRequest(request.name);
+      await notifyWhitelistUser(
+        interaction.client,
+        request,
+        `You have been whitelisted as **${request.name}**. You can now join the server.`,
+      );
       return interaction.editReply(buildWhitelistResult(`Approved ${request.name}.`));
     }
     if (action === 'revoke') {
       await interaction.deferUpdate();
       await revokeRequest(request.name);
+      await notifyWhitelistUser(
+        interaction.client,
+        request,
+        `Your whitelist access for **${request.name}** has been removed.`,
+      );
       return interaction.editReply(buildWhitelistResult(`Removed ${request.name} from the whitelist.`, true));
     }
   }
@@ -459,6 +486,18 @@ async function handleModal(interaction) {
         flags: MessageFlags.Ephemeral,
       });
     }
+    const lastRequestAt = whitelistRequestCooldowns.get(interaction.user.id);
+    if (lastRequestAt) {
+      const remaining = REQUEST_COOLDOWN_MS - (Date.now() - lastRequestAt);
+      if (remaining > 0) {
+        const minutes = Math.ceil(remaining / 60_000);
+        return interaction.reply({
+          content: `You can submit another whitelist request in about ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+      whitelistRequestCooldowns.delete(interaction.user.id);
+    }
     const { request, already } = createRequest(
       name,
       interaction.user.tag,
@@ -474,6 +513,7 @@ async function handleModal(interaction) {
     }
     const channel = await interaction.client.channels.fetch(WHITELIST_REQUEST_CHANNEL_ID);
     await channel.send(buildWhitelistRequest(request));
+    whitelistRequestCooldowns.set(interaction.user.id, Date.now());
     return interaction.reply({
       content: 'Your whitelist request was sent for review.',
       flags: MessageFlags.Ephemeral,

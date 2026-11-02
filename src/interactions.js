@@ -177,17 +177,25 @@ async function handleCommand(interaction) {
     const viewContainer = new ContainerBuilder().addTextDisplayComponents(
       new TextDisplayBuilder().setContent(`## Whitelisted users\n${description}`),
     );
-    for (let i = 0; i < approved.length; i += 5) {
-      viewContainer.addActionRowComponents(
-        new ActionRowBuilder().addComponents(
-          ...approved.slice(i, i + 5).map((request) =>
-            new ButtonBuilder()
-              .setCustomId(`whitelist:revoke:${request.name}`)
-              .setLabel(`Remove ${request.name}`)
-              .setStyle(ButtonStyle.Danger),
-          ),
-        ),
+    if (subcommand === 'remove') {
+      const target = interaction.options.getUser('user', true);
+      const request = approved.find((item) => item.discordUserId === target.id);
+      if (!request) {
+        return interaction.reply({
+          content: `${target.tag} does not have an approved whitelist entry.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+      await revokeRequest(request.name);
+      await notifyWhitelistUser(
+        interaction.client,
+        request,
+        `Your whitelist access for **${request.name}** has been removed.`,
       );
+      return interaction.reply({
+        content: `Removed **${request.name}** from the whitelist for ${target}.`,
+        flags: MessageFlags.Ephemeral,
+      });
     }
     return interaction.reply({
       components: [viewContainer],
@@ -369,16 +377,6 @@ async function handleButton(interaction) {
         `You have been whitelisted as **${request.name}**. You can now join the server.`,
       );
       return interaction.editReply(buildWhitelistResult(`Approved ${request.name}.`));
-    }
-    if (action === 'revoke') {
-      await interaction.deferUpdate();
-      await revokeRequest(request.name);
-      await notifyWhitelistUser(
-        interaction.client,
-        request,
-        `Your whitelist access for **${request.name}** has been removed.`,
-      );
-      return interaction.editReply(buildWhitelistResult(`Removed ${request.name} from the whitelist.`, true));
     }
   }
 

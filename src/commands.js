@@ -53,6 +53,14 @@ export const commandData = [
     )
     .addSubcommand((sub) =>
       sub.setName('view').setDescription('View linked whitelisted users'),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('remove')
+        .setDescription('Remove a Discord user from the whitelist')
+        .addUserOption((opt) =>
+          opt.setName('user').setDescription('Discord user to remove').setRequired(true),
+        ),
     ),
 ].map((command) => command.toJSON());
 

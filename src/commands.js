@@ -9,14 +9,7 @@ export const commandData = [
     .addSubcommand((sub) =>
       sub
         .setName('setup')
-        .setDescription('Post the live dashboard in this channel')
-        .addChannelOption((opt) =>
-          opt
-            .setName('controls')
-            .setDescription('Mod-only channel for the start/stop/restart controls')
-            .addChannelTypes(...postableChannels)
-            .setRequired(true),
-        ),
+        .setDescription('Post the live server status in this channel'),
     )
     .addSubcommand((sub) =>
       sub.setName('controls').setDescription('Post only the server controls panel in this channel'),

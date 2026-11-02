@@ -20,8 +20,8 @@ import {
   buildStatusEmbed,
   buildSystemEmbed,
   getLocation,
+  setDashboardMessage,
   setControlMessage,
-  setDashboardMessages,
   updateDashboard,
 } from './dashboard.js';
 import { restartService, startService, stopService } from './actions.js';
@@ -171,18 +171,6 @@ async function handleCommand(interaction) {
         flags: MessageFlags.Ephemeral,
       });
     }
-    if (subcommand === 'controls') {
-      const snapshots = await snapshotAll();
-      const controlMessage = await interaction.channel.send({
-        embeds: [buildControlEmbed()],
-        components: buildControlRows(snapshots),
-      });
-      await setControlMessage(controlMessage);
-      return interaction.reply({
-        content: 'Controls panel posted in this channel.',
-        flags: MessageFlags.Ephemeral,
-      });
-    }
     const approved = listRequests('approved').filter((request) => request.discordUserId);
     const description = approved.length
       ? approved.map((request) => `**${request.name}** — <@${request.discordUserId}>`).join('\n')
@@ -225,8 +213,8 @@ async function handleCommand(interaction) {
 
   if (commandName === 'dashboard') {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const controlsChannel = interaction.options.getChannel('controls', true);
     const snapshots = await snapshotAll();
+    const subcommand = interaction.options.getSubcommand();
     const embeds = [buildStatusEmbed(snapshots)];
     if (panelConfigured()) {
       try {
@@ -235,6 +223,15 @@ async function handleCommand(interaction) {
         embeds.push(new EmbedBuilder().setTitle('System').setDescription('Waiting for panel...'));
       }
     }
+    if (subcommand === 'controls') {
+      const controlMessage = await interaction.channel.send({
+        embeds: [buildControlEmbed()],
+        components: buildControlRows(snapshots),
+      });
+      await setControlMessage(controlMessage);
+      return interaction.editReply('Controls panel posted in this channel.');
+    }
+
     const existing = getLocation();
     let dashboardMessage;
     if (existing?.dashboardMessageId) {
@@ -248,29 +245,8 @@ async function handleCommand(interaction) {
     } else {
       dashboardMessage = await interaction.channel.send({ embeds });
     }
-    let controlMessage;
-    if (existing?.controlMessageId) {
-      try {
-        const channel = await interaction.client.channels.fetch(existing.controlChannelId);
-        controlMessage = await channel.messages.fetch(existing.controlMessageId);
-        await controlMessage.edit({
-          embeds: [buildControlEmbed()],
-          components: buildControlRows(snapshots),
-        });
-      } catch {
-        controlMessage = await controlsChannel.send({
-          embeds: [buildControlEmbed()],
-          components: buildControlRows(snapshots),
-        });
-      }
-    } else {
-      controlMessage = await controlsChannel.send({
-        embeds: [buildControlEmbed()],
-        components: buildControlRows(snapshots),
-      });
-    }
-    await setDashboardMessages(interaction.client, dashboardMessage, controlMessage);
-    return interaction.editReply(`Dashboard updated. Controls posted in <#${controlsChannel.id}>.`);
+    await setDashboardMessage(dashboardMessage);
+    return interaction.editReply('Server status posted.');
   }
 
   if (commandName === 'announce') {

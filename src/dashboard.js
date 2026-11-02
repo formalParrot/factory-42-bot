@@ -74,6 +74,17 @@ export async function setDashboardMessages(client, dashboardMessage, controlMess
   persistLocation();
 }
 
+export async function setDashboardMessage(dashboardMessage) {
+  location = {
+    channelId: dashboardMessage.channelId,
+    dashboardMessageId: dashboardMessage.id,
+    controlChannelId: location?.controlChannelId ?? null,
+    controlMessageId: location?.controlMessageId ?? null,
+  };
+  cache.dashboard = dashboardMessage;
+  persistLocation();
+}
+
 export async function setControlMessage(controlMessage) {
   location = {
     channelId: location?.channelId ?? null,

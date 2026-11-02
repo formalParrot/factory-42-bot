@@ -23,18 +23,18 @@ const COLOR_CONTROL = 0x5865f2;
 // (white -> yellow -> orange -> red). Emoji render inline with no code block,
 // so editing the message does not trigger the code-block reflow that flickers.
 const BAR_SEGMENTS = 10;
-const SQUARE_EMPTY = '⬛';
+const SQUARE_EMPTY = '░';
 
 function usageSquare(percent) {
-  if (percent >= 90) return '🟥';
-  if (percent >= 85) return '🟧';
-  if (percent >= 75) return '🟨';
-  return '⬜';
+  if (percent >= 90) return '█';
+  if (percent >= 75) return '▓';
+  if (percent >= 50) return '▒';
+  return '░';
 }
 
 function usageBar(percent) {
   const filled = Math.max(0, Math.min(BAR_SEGMENTS, Math.round((percent / 100) * BAR_SEGMENTS)));
-  return usageSquare(percent).repeat(filled) + SQUARE_EMPTY.repeat(BAR_SEGMENTS - filled);
+  return `\`\`\`${usageSquare(percent).repeat(filled)}${SQUARE_EMPTY.repeat(BAR_SEGMENTS - filled)}\`\`\``;
 }
 
 const DATA_DIR = new URL('../data/', import.meta.url);
@@ -71,6 +71,17 @@ export async function setDashboardMessages(client, dashboardMessage, controlMess
   };
   cache.dashboard = dashboardMessage;
   cache.control = controlMessage ?? null;
+  persistLocation();
+}
+
+export async function setControlMessage(controlMessage) {
+  location = {
+    channelId: location?.channelId ?? null,
+    dashboardMessageId: location?.dashboardMessageId ?? null,
+    controlChannelId: controlMessage.channelId,
+    controlMessageId: controlMessage.id,
+  };
+  cache.control = controlMessage;
   persistLocation();
 }
 

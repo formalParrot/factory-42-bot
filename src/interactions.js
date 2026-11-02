@@ -20,6 +20,7 @@ import {
   buildStatusEmbed,
   buildSystemEmbed,
   getLocation,
+  setControlMessage,
   setDashboardMessages,
   updateDashboard,
 } from './dashboard.js';
@@ -167,6 +168,18 @@ async function handleCommand(interaction) {
       await interaction.channel.send(buildWhitelistPanel());
       return interaction.reply({
         content: 'Whitelist request panel posted.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+    if (subcommand === 'controls') {
+      const snapshots = await snapshotAll();
+      const controlMessage = await interaction.channel.send({
+        embeds: [buildControlEmbed()],
+        components: buildControlRows(snapshots),
+      });
+      await setControlMessage(controlMessage);
+      return interaction.reply({
+        content: 'Controls panel posted in this channel.',
         flags: MessageFlags.Ephemeral,
       });
     }

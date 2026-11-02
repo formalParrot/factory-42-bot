@@ -26,6 +26,8 @@ export async function fetchSystemStats() {
     cpus: data.cpus ?? null,
     memBytes: data.mem ?? 0,
     maxMemBytes: data.maxmem ?? 0,
+    diskBytes: data.disk ?? 0,
+    maxDiskBytes: data.maxdisk ?? 0,
   };
 }
 
@@ -40,12 +42,18 @@ function formatBytes(bytes) {
 export function usageMetrics(stats) {
   const cpuPercent = stats.cpuFraction * 100;
   const ramPercent = stats.maxMemBytes ? (stats.memBytes / stats.maxMemBytes) * 100 : 0;
+  const storagePercent = stats.maxDiskBytes ? (stats.diskBytes / stats.maxDiskBytes) * 100 : 0;
   return [
     { label: 'CPU', percent: cpuPercent, detail: stats.cpus ? `across ${stats.cpus} cores` : '' },
     {
       label: 'RAM',
       percent: ramPercent,
       detail: `${formatBytes(stats.memBytes)} / ${formatBytes(stats.maxMemBytes)}`,
+    },
+    {
+      label: 'Storage',
+      percent: storagePercent,
+      detail: `${formatBytes(stats.diskBytes)} / ${formatBytes(stats.maxDiskBytes)}`,
     },
   ];
 }

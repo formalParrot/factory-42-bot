@@ -17,6 +17,9 @@ export const commandData = [
             .addChannelTypes(...postableChannels)
             .setRequired(true),
         ),
+    )
+    .addSubcommand((sub) =>
+      sub.setName('controls').setDescription('Post only the server controls panel in this channel'),
     ),
   new SlashCommandBuilder()
     .setName('status')

@@ -43,9 +43,6 @@ export const commandData = [
         .addChannelTypes(...postableChannels),
     ),
   new SlashCommandBuilder()
-    .setName('whitelist-setup')
-    .setDescription('Set up the whitelist system'),
-  new SlashCommandBuilder()
     .setName('whitelist')
     .setDescription('Manage the server whitelist')
     .addSubcommand((sub) =>
